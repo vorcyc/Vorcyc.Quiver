@@ -1,5 +1,7 @@
 ﻿# Vorcy Quiver 1.0 Technical Documentation
 
+![Vorcy Quiver 1.0](logo.jpg "Vorcy Quiver 1.0")
+
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
 > **Namespace**: `Vorcyc.Quiver`  

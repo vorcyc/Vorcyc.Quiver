@@ -1,14 +1,12 @@
-﻿# Vorcy Quiver 1.0
+﻿# Vorcyc Quiver 1.1
 
-![Vorcy Quiver 1.0](logo.jpg "Vorcy Quiver 1.0")
+![Vorcyc Quiver 1.1](logo.jpg "Vorcyc Quiver 1.1")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
-[Github Repo (full documention)](https://github.com/vorcyc/Vorcyc.Quiver)
+📖 [Github Repo (full documention)](https://github.com/vorcyc/Vorcyc.Quiver)
 
 **Quiver** draws on EF Core's `DbContext` design pattern, allowing developers to define entities and indexing strategies through declarative attributes such as `[QuiverKey]`, `[QuiverVector]`, and `[QuiverIndex]`, with the framework automatically completing model discovery, index construction, and persistence management at runtime.
-
-📖 For the full technical documentation, see [README.md](README.md).
 
 ---
 

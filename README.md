@@ -1,6 +1,6 @@
-﻿# Vorcy Quiver 1.0 Technical Documentation
+﻿# Vorcyc Quiver 1.1 Technical Documentation
 
-![Vorcy Quiver 1.0](logo.jpg "Vorcy Quiver 1.0")
+![Vorcyc Quiver 1.1](logo.jpg "Vorcyc Quiver 1.1")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
@@ -133,11 +133,11 @@ graph TB
 | Component | Type | Responsibility |
 |-----------|------|----------------|
 | `QuiverDbContext` | `abstract class` | Database context base class, manages automatic reflection discovery of QuiverSet collections, persistence read/write, lifecycle |
-| `QuiverSet<TEntity>` | `class` | Vector collection, provides full CRUD + multiple search modes, internal `ReaderWriterLockSlim` reader-writer lock |
+| `QuiverSet<TEntity>` | `partial class` | Vector collection, implements `IEnumerable<TEntity>`, provides full CRUD + multiple search modes + `foreach` / LINQ enumeration, internal `ReaderWriterLockSlim` reader-writer lock |
 | `IVectorIndex` | `internal interface` | Unified vector index contract, defines `Add` / `Remove` / `Clear` / `Search` / `SearchByThreshold` |
 | `IStorageProvider` | `internal interface` | Unified persistence contract, supports `SaveAsync` / `LoadAsync` |
 | `StorageProviderFactory` | `internal static class` | Factory method, creates corresponding `IStorageProvider` instance based on `StorageFormat` enum |
-| `QuiverVectorAttribute` | `Attribute` | Marks vector field, specifies dimensions and distance metric |
+| `QuiverVectorAttribute` | `Attribute` | Marks vector field, specifies dimensions (`dimensions`), distance metric (`metric`), and nullable (`Optional`) |
 | `QuiverKeyAttribute` | `Attribute` | Marks entity primary key (exactly one per entity) |
 | `QuiverIndexAttribute` | `Attribute` | Configures index type and tuning parameters (optional, defaults to Flat) |
 | `QuiverDbOptions` | `class` | Global configuration: storage path, default metric, format, JSON options, WAL configuration |
@@ -169,6 +169,7 @@ classDiagram
     }
 
     class QuiverSet~TEntity~ {
+        <<IEnumerable~TEntity~>>
         -Dictionary~int, TEntity~ _entities
         -Dictionary~object, int~ _keyToId
         -FrozenDictionary~string, QuiverFieldInfo~ _vectorFields
@@ -179,6 +180,7 @@ classDiagram
         -int _nextId
         +int Count
         +IReadOnlyDictionary VectorFields
+        +GetEnumerator() IEnumerator~TEntity~
         +Add(entity)
         +AddRange(entities)
         +Upsert(entity)
@@ -509,6 +511,10 @@ public float[] Embedding { get; set; } = [];
 // 384-dimensional vector, explicitly specifying Euclidean distance
 [QuiverVector(384, DistanceMetric.Euclidean)]
 public float[] TextFeature { get; set; } = [];
+
+// 128-dimensional nullable vector (for scenarios where not all entities have this feature)
+[QuiverVector(128, DistanceMetric.Cosine, Optional = true)]
+public float[]? FaceEmbedding { get; set; }
 ```
 
 **Parameter Description**:
@@ -517,6 +523,7 @@ public float[] TextFeature { get; set; } = [];
 |-----------|------|---------|-------------|
 | `dimensions` | `int` | — (required) | Vector dimensions, validated at runtime `vector.Length == dimensions` |
 | `metric` | `DistanceMetric` | `Cosine` | Distance metric type |
+| `Optional` | `bool` | `false` | Whether to allow the vector to be `null`. When `true`, entities with null vectors are still written but not added to that field's index |
 
 > **Common Dimensions**: 128 (lightweight models), 384 (MiniLM), 768 (BERT-base), 1024 (BERT-large), 1536 (OpenAI Ada-002), 3072 (OpenAI text-embedding-3-large).
 
@@ -524,6 +531,8 @@ public float[] TextFeature { get; set; } = [];
 - On write (`AddCore` / `PrepareVectors`): validates dimension match, throws `ArgumentException` on mismatch
 - `Cosine` metric: performs L2 normalization before storing in index (`NormalizeToArray`)
 - Non-`Cosine` metrics: performs defensive copy (`vector.Clone()`) to prevent external array modifications from corrupting the index
+- `Optional = false` (default): throws `ArgumentNullException` if vector is `null`
+- `Optional = true`: skips that field's index when vector is `null`; entity is still written normally; search on that field will not return this entity
 
 #### `[QuiverIndex(indexType)]` — Index Configuration (Optional)
 
@@ -610,7 +619,13 @@ var set2 = db.Set<FaceFeature>(); // Generic method access (supports dynamic typ
 
 ### 3.3 Vector Collection QuiverSet\<TEntity\>
 
-`QuiverSet<TEntity>` is a vector collection for a single entity type, providing complete CRUD and search capabilities.
+`QuiverSet<TEntity>` is a vector collection for a single entity type, implementing `IEnumerable<TEntity>`, providing complete CRUD, search, and enumeration capabilities with support for `foreach` loops and LINQ queries.
+
+> **Implementation Note**: `QuiverSet<TEntity>` uses `partial class` split across multiple files by responsibility:
+> - `QuiverSet.cs` — Fields, constructor, properties, enumerator, Dispose, private utility methods
+> - `QuiverSet.Crud.cs` — CRUD operations (Add / AddRange / Upsert / Remove / Find / Clear)
+> - `QuiverSet.Search.cs` — Vector retrieval (sync + async + default field + core search helpers)
+> - `QuiverSet.Persistence.cs` — Change tracking, WAL replay, persistence support
 
 #### Internal Data Structures
 
@@ -628,7 +643,7 @@ graph LR
 
     subgraph External Access
         ADD["Add / Upsert / Remove<br/>-> Write Lock"]
-        SEARCH["Search / Find / Count<br/>-> Read Lock"]
+        SEARCH["Search / Find / Count / foreach<br/>-> Read Lock"]
     end
 
     ADD --> LK
@@ -650,10 +665,10 @@ flowchart TD
     D --> E["Discover all [QuiverVector] properties via reflection"]
     E --> F{"Iterate each vector property"}
     F --> G["Verify property type == float[]"]
-    G --> H["Read QuiverVectorAttribute: dimensions, metric"]
+    G --> H["Read QuiverVectorAttribute: dimensions, metric, optional"]
     H --> I["Read QuiverIndexAttribute (optional)"]
     I --> J["Determine preNormalize = metric == Cosine"]
-    J --> K["CompileGetter&lt;float[]&gt;(prop)"]
+    J --> K["CompileGetter&lt;float[]?&gt;(prop)"]
     K --> L["Determine SimilarityFunc:<br/>preNormalize? Dot : CreateSimilarityFunc(metric)"]
     L --> M["CreateIndex(indexAttr, simFunc)"]
     M --> F
@@ -783,7 +798,7 @@ flowchart TD
 
 ```csharp
 // Small data (<=10K): sequential traversal is faster, avoids thread scheduling overhead
-private List<(int, float)> SequentialSearchCore(float[] query, int topK)
+private List<(int Id, float Similarity)> SequentialSearchCore(float[] query, int topK)
 {
     var results = new List<(int Id, float Sim)>(_vectors.Count);
     foreach (var (id, vector) in _vectors)
@@ -792,11 +807,13 @@ private List<(int, float)> SequentialSearchCore(float[] query, int topK)
 }
 
 // Large data (>10K): Parallel.ForEach for multi-threaded parallel computation
-private List<(int, float)> ParallelSearchCore(float[] query, int topK)
+private List<(int Id, float Similarity)> ParallelSearchCore(float[] query, int topK)
 {
     var results = new ConcurrentBag<(int Id, float Similarity)>();
     Parallel.ForEach(_vectors, kvp =>
-        results.Add((kvp.Key, similarityFunc(query, kvp.Value))));
+    {
+        results.Add((kvp.Key, similarityFunc(query, kvp.Value)));
+    });
     return results.OrderByDescending(r => r.Similarity).Take(topK).ToList();
 }
 ```
@@ -1162,6 +1179,42 @@ int count = db.Documents.Count; // Thread-safe (read lock)
 foreach (var (name, dimensions) in db.Documents.VectorFields)
     Console.WriteLine($"Field: {name}, Dimensions: {dimensions}");
 ```
+
+### 6.7 Enumeration and LINQ Queries
+
+`QuiverSet<TEntity>` implements `IEnumerable<TEntity>`, supporting `foreach` loops and LINQ queries.
+
+```csharp
+// foreach to iterate all entities
+foreach (var doc in db.Documents)
+    Console.WriteLine($"{doc.Id}: {doc.Title}");
+
+// LINQ filter + sort
+var tutorials = db.Documents
+    .Where(e => e.Category == "Tutorial")
+    .OrderBy(e => e.Title)
+    .ToList();
+
+// LINQ aggregation
+var categoryCount = db.Documents
+    .GroupBy(e => e.Category)
+    .Select(g => new { Category = g.Key, Count = g.Count() })
+    .ToList();
+
+// LINQ conditional count
+int tutorialCount = db.Documents.Count(e => e.Category == "Tutorial");
+```
+
+**Thread Safety Semantics**:
+
+Enumeration **takes a snapshot of entities within a read lock** (shallow copy), then releases the lock before `yield return`ing one by one. This means:
+
+- ✅ No lock is held during enumeration, so write operations are not blocked
+- ✅ Concurrent writes during enumeration do not affect the already-captured snapshot
+- ✅ Any code can safely run inside the `foreach` body with no deadlock risk
+- ⚠️ Each enumeration creates an O(n) snapshot copy — be mindful of performance with large datasets
+
+> **Performance Tip**: If you only need to find by primary key, use `Find(key)` (O(1)); if you need vector similarity ordering, use `Search(...)`. `foreach` / LINQ is best suited for full-collection traversal or filtering by non-vector properties.
 
 ---
 
@@ -1690,6 +1743,75 @@ foreach (var (name, dimensions) in db.Items.VectorFields)
 // Field: AudioEmbedding, Dimensions: 256
 ```
 
+### 9.5 Optional Vector Fields
+
+Mark a vector field as nullable with `Optional = true`. Useful when not all entities have a particular feature — e.g., an image collection where only some images contain faces.
+
+#### Defining an Optional Vector Entity
+
+```csharp
+public class ImageEntity
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+
+    public string FileName { get; set; } = string.Empty;
+
+    /// <summary>Overall image feature vector (required)</summary>
+    [QuiverVector(512, DistanceMetric.Cosine)]
+    public float[] ImageEmbedding { get; set; } = [];
+
+    /// <summary>Face feature vector (nullable, null when no face detected)</summary>
+    [QuiverVector(128, DistanceMetric.Cosine, Optional = true)]
+    public float[]? FaceEmbedding { get; set; }
+}
+```
+
+#### Behavioral Semantics
+
+| Operation | When `FaceEmbedding = null` | When `FaceEmbedding` has a value |
+|-----------|---------------------------|----------------------------------|
+| `Add` / `Upsert` | Entity is written normally, **not added** to FaceEmbedding index | Dimensions validated and added to index normally |
+| `Search(e => e.FaceEmbedding, ...)` | This entity **will not appear** in results | Participates in similarity computation normally |
+| `Search(e => e.ImageEmbedding, ...)` | Participates in search normally | Participates in search normally |
+| `Remove` | All indices silently remove | Removed normally |
+
+#### Usage Example
+
+```csharp
+await using var db = new ImageDb();
+await db.LoadAsync();
+
+// Write: image with face
+db.Images.Add(new ImageEntity
+{
+    Id = "img-001",
+    FileName = "portrait.jpg",
+    ImageEmbedding = GetImageEmbedding("portrait.jpg"),
+    FaceEmbedding = GetFaceEmbedding("portrait.jpg") // Face detected
+});
+
+// Write: landscape without face (FaceEmbedding is null)
+db.Images.Add(new ImageEntity
+{
+    Id = "img-002",
+    FileName = "landscape.jpg",
+    ImageEmbedding = GetImageEmbedding("landscape.jpg"),
+    FaceEmbedding = null // No face, Optional field allows null
+});
+
+// Search by image — both images participate
+var allResults = db.Images.Search(e => e.ImageEmbedding, imageQuery, topK: 10);
+// allResults may contain img-001 and img-002
+
+// Search by face — only images with faces participate
+var faceResults = db.Images.Search(e => e.FaceEmbedding, faceQuery, topK: 10);
+// faceResults can only contain img-001; img-002 is not in the FaceEmbedding index
+```
+
+> ⚠️ **Note**: Non-Optional vector fields (default) throw `ArgumentNullException` if `null` is passed, with a clear message:  
+> `"Vector field 'FieldName' is required but was null. Mark [QuiverVector(Optional = true)] to allow null."`
+
 ---
 
 ## 10. Thread Safety and Concurrency
@@ -1704,6 +1826,7 @@ flowchart LR
         S["Search"]
         F["Find"]
         C["Count"]
+        FE["foreach / LINQ"]
         GA["GetAll"]
     end
 
@@ -1716,7 +1839,7 @@ flowchart LR
         LE["LoadEntities"]
     end
 
-    S & F & C & GA -->|"Parallel execution ✅"| RLock["EnterReadLock"]
+    S & F & C & FE & GA -->|"Parallel execution ✅"| RLock["EnterReadLock"]
     A & AR & U & R & CL & LE -->|"Mutually exclusive 🔒"| WLock["EnterWriteLock"]
 ```
 
@@ -1989,10 +2112,12 @@ if (logChanges)
 ```csharp
 internal List<(byte Op, object? Key, object? Entity)> DrainChanges()
 {
+    ThrowIfDisposed();
     _lock.EnterWriteLock();
     try
     {
-        if (_changeLog.Count == 0) return [];
+        if (_changeLog.Count == 0)
+            return [];
         var snapshot = new List<(byte, object?, object?)>(_changeLog);
         _changeLog.Clear();
         return snapshot;
@@ -2295,6 +2420,12 @@ public class SearchService
 | `Count` | `int` | Entity count (read lock protected, thread-safe) |
 | `VectorFields` | `IReadOnlyDictionary<string, int>` | Read-only mapping of vector field name → dimensions (lazily cached) |
 
+#### Enumeration
+
+| Method | Return Type | Lock | Description |
+|--------|-------------|------|-------------|
+| `GetEnumerator()` | `IEnumerator<TEntity>` | Read (snapshot) | Supports `foreach` and LINQ. Takes snapshot within read lock, then enumerates |
+
 #### CRUD Methods
 
 | Method | Return Type | Lock | Description |
@@ -2329,7 +2460,7 @@ All synchronous search methods have corresponding `Async` suffix versions with a
 | Attribute | Target | Required | Description |
 |-----------|--------|----------|-------------|
 | `[QuiverKey]` | Property | ✅ | Marks primary key (exactly one required) |
-| `[QuiverVector(dim, metric)]` | Property | ✅ | Marks vector field (at least one, type must be `float[]`) |
+| `[QuiverVector(dim, metric)]` | Property | ✅ | Marks vector field (at least one, type must be `float[]`). `Optional = true` allows `null` |
 | `[QuiverIndex(type, ...)]` | Property | ❌ | Configures index type and parameters (defaults to Flat) |
 
 ### Enums

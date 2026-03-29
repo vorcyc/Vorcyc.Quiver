@@ -49,6 +49,16 @@ public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = Dista
 
     /// <summary>距离度量类型，决定相似度计算方式和是否启用预归一化优化。</summary>
     public DistanceMetric Metric { get; } = metric;
+
+    /// <summary>
+    /// 是否允许向量值为 <c>null</c>。默认 <c>false</c>（必填）。
+    /// <para>
+    /// 设为 <c>true</c> 时，向量为 <c>null</c> 的实体仍可写入，但不会加入该字段的索引，
+    /// 搜索该字段时也不会返回这些实体。适用于并非所有实体都具有此特征的场景
+    /// （如图片中的人脸向量——并非每张图都有人脸）。
+    /// </para>
+    /// </summary>
+    public bool Optional { get; set; }
 }
 
 /// <summary>

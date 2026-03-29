@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/docs/">
+    <File Path="README.md" />
+    <File Path="README_zh_cn.md" />
+  </Folder>
+  <Folder Name="/TESTS/">
+    <Project Path="TESTS/all_basic_tests/all_basic_tests.csproj" />
+  </Folder>
+  <Project Path="Vorcyc.Quiver/Vorcyc.Quiver.csproj" />
+</Solution>

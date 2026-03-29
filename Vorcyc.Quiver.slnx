@@ -2,6 +2,7 @@
   <Folder Name="/docs/">
     <File Path="logo.jpg" />
     <File Path="README.md" />
+    <File Path="README_Simple.md" />
     <File Path="README_zh_cn.md" />
   </Folder>
   <Folder Name="/TESTS/">

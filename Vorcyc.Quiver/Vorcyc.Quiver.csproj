@@ -22,7 +22,7 @@
     <!-- NuGet 包 -->
     <PackageId>Vorcyc.Quiver</PackageId>
     <PackageTags>vector-database;embedding;ANN;HNSW;IVF;KDTree;cosine-similarity;SIMD;WAL;code-first;EF-Core-style;semantic-search;RAG;face-recognition</PackageTags>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReadmeFile>README_Simple.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/Vorcyc/Vorcyc.Quiver</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Vorcyc/Vorcyc.Quiver</RepositoryUrl>
@@ -39,7 +39,7 @@
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
-    <None Include="..\README.md">
+    <None Include="..\README_Simple.md">
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>

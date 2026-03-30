@@ -1,6 +1,6 @@
-# Vorcyc Quiver 1.1 技术文档
+# Vorcyc Quiver 1.1.1 技术文档
 
-![Vorcyc Quiver 1.1](logo.jpg "Vorcyc Quiver 1.1")
+![Vorcyc Quiver 1.1.1](logo.jpg "Vorcyc Quiver 1.1.1")
 
 > **产品定位**：纯 .NET 实现的嵌入式向量数据库 —— 零原生依赖，进程内运行，无需独立部署数据库服务器  
 > **框架版本**：.NET 10  
@@ -187,6 +187,8 @@ classDiagram
         +Remove(entity) bool
         +RemoveByKey(key) bool
         +Find(key) TEntity?
+        +Exists(key) bool
+        +Exists(predicate) bool
         +Clear()
         +Search(...) List~QuiverSearchResult~
         +SearchTop1(...) QuiverSearchResult?
@@ -1161,7 +1163,28 @@ bool removed = db.Documents.RemoveByKey("doc-001");
 Document? doc = db.Documents.Find("doc-001");
 ```
 
-### 6.5 清空集合
+### 6.5 存在性判断
+
+```csharp
+// 按主键判断，O(1) 复杂度（仅查 _keyToId 字典，比 Find 少一次字典查找）
+bool exists = db.Documents.Exists("doc-001");
+
+// 按条件判断，O(n) 最坏（读锁内遍历，命中即短路返回）
+bool hasTutorial = db.Documents.Exists(e => e.Category == "教程");
+```
+
+**与其他方式的对比**：
+
+| 方式 | 复杂度 | 内存分配 | 适用场景 |
+|------|--------|---------|----------|
+| `Exists(key)` | O(1) | 无 | 按主键判断 |
+| `Exists(predicate)` | O(n) 短路 | 无 | 按属性条件判断 |
+| `Find(key) != null` | O(1) | 无 | 需要同时获取实体时 |
+| LINQ `.Any(predicate)` | O(n) | O(n) 快照 | 不推荐，会创建完整快照 |
+
+> **性能提示**：`Exists(predicate)` 直接在读锁内遍历 `_entities.Values`，命中即返回，**不会创建快照数组**。相比 LINQ 的 `Any()` 走 `GetEnumerator()` 拍摄 O(n) 快照后再遍历，内存零分配且更快。
+
+### 6.6 清空集合
 
 ```csharp
 db.Documents.Clear();
@@ -1169,7 +1192,7 @@ db.Documents.Clear();
 // 重置 _nextId = 0
 ```
 
-### 6.6 获取信息
+### 6.7 获取信息
 
 ```csharp
 int count = db.Documents.Count; // 线程安全（读锁）
@@ -1179,7 +1202,7 @@ foreach (var (name, dimensions) in db.Documents.VectorFields)
     Console.WriteLine($"字段: {name}, 维度: {dimensions}");
 ```
 
-### 6.7 枚举与 LINQ 查询
+### 6.8 枚举与 LINQ 查询
 
 `QuiverSet<TEntity>` 实现 `IEnumerable<TEntity>`，支持 `foreach` 循环和 LINQ 查询。
 
@@ -1824,6 +1847,7 @@ flowchart LR
     subgraph 读操作 共享锁
         S["Search"]
         F["Find"]
+        EX["Exists"]
         C["Count"]
         FE["foreach / LINQ"]
         GA["GetAll"]
@@ -1838,7 +1862,7 @@ flowchart LR
         LE["LoadEntities"]
     end
 
-    S & F & C & FE & GA -->|"并行执行 ✅"| RLock["EnterReadLock"]
+    S & F & EX & C & FE & GA -->|"并行执行 ✅"| RLock["EnterReadLock"]
     A & AR & U & R & CL & LE -->|"互斥执行 🔒"| WLock["EnterWriteLock"]
 ```
 
@@ -2436,6 +2460,8 @@ public class SearchService
 | `Remove(entity)` | `bool` | 写锁 | 按实体主键删除 |
 | `RemoveByKey(key)` | `bool` | 写锁 | 按主键值删除 |
 | `Find(key)` | `TEntity?` | 读锁 | 按主键查找，O(1) |
+| `Exists(key)` | `bool` | 读锁 | 按主键判断存在性，O(1)（仅查 `_keyToId`） |
+| `Exists(predicate)` | `bool` | 读锁 | 按条件判断存在性，O(n) 短路（命中即返回，无快照分配） |
 | `Clear()` | `void` | 写锁 | 清空全部数据 + 索引 |
 
 #### 搜索方法（同步）

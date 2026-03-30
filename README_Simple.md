@@ -1,6 +1,6 @@
-﻿# Vorcyc Quiver 1.1
+﻿# Vorcyc Quiver 1.1.1
 
-![Vorcyc Quiver 1.1](logo.jpg "Vorcyc Quiver 1.1")
+![Vorcyc Quiver 1.1.1](logo.jpg "Vorcyc Quiver 1.1.1")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
@@ -138,6 +138,10 @@ db.Documents.RemoveByKey("doc-001");   // By key directly
 // Find
 Document? doc = db.Documents.Find("doc-001"); // O(1)
 
+// Exists
+bool exists = db.Documents.Exists("doc-001");              // By key, O(1)
+bool hasTutorial = db.Documents.Exists(e => e.Category == "Tutorial"); // By predicate, O(n) short-circuit
+
 // Clear
 db.Documents.Clear();
 
@@ -222,7 +226,7 @@ var options = new QuiverDbOptions
 
 `QuiverSet<T>` uses `ReaderWriterLockSlim`:
 
-- **Read operations** (Search / Find / Count) — shared lock, parallel execution ✅
+- **Read operations** (Search / Find / Exists / Count) — shared lock, parallel execution ✅
 - **Write operations** (Add / Upsert / Remove / Clear) — exclusive lock 🔒
 
 No external locking needed.

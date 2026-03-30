@@ -1,6 +1,6 @@
-﻿# Vorcyc Quiver 1.1 Technical Documentation
+﻿# Vorcyc Quiver 1.1.1 Technical Documentation
 
-![Vorcyc Quiver 1.1](logo.jpg "Vorcyc Quiver 1.1")
+![Vorcyc Quiver 1.1.1](logo.jpg "Vorcyc Quiver 1.1.1")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
@@ -187,6 +187,8 @@ classDiagram
         +Remove(entity) bool
         +RemoveByKey(key) bool
         +Find(key) TEntity?
+        +Exists(key) bool
+        +Exists(predicate) bool
         +Clear()
         +Search(...) List~QuiverSearchResult~
         +SearchTop1(...) QuiverSearchResult?
@@ -1162,7 +1164,28 @@ bool removed = db.Documents.RemoveByKey("doc-001");
 Document? doc = db.Documents.Find("doc-001");
 ```
 
-### 6.5 Clearing the Collection
+### 6.5 Existence Check
+
+```csharp
+// By primary key, O(1) complexity (only checks _keyToId dictionary, one fewer lookup than Find)
+bool exists = db.Documents.Exists("doc-001");
+
+// By predicate, O(n) worst case (iterates within read lock, short-circuits on first match)
+bool hasTutorial = db.Documents.Exists(e => e.Category == "Tutorial");
+```
+
+**Comparison with other approaches**:
+
+| Approach | Complexity | Memory Allocation | Use Case |
+|----------|-----------|-------------------|----------|
+| `Exists(key)` | O(1) | None | Check by primary key |
+| `Exists(predicate)` | O(n) short-circuit | None | Check by property condition |
+| `Find(key) != null` | O(1) | None | When you also need the entity |
+| LINQ `.Any(predicate)` | O(n) | O(n) snapshot | Not recommended — creates full snapshot |
+
+> **Performance Tip**: `Exists(predicate)` iterates `_entities.Values` directly within the read lock, returning immediately on match, with **zero snapshot allocation**. Compared to LINQ's `Any()` which goes through `GetEnumerator()` creating an O(n) snapshot array first, this is both faster and allocation-free.
+
+### 6.6 Clearing the Collection
 
 ```csharp
 db.Documents.Clear();
@@ -1170,7 +1193,7 @@ db.Documents.Clear();
 // Resets _nextId = 0
 ```
 
-### 6.6 Getting Information
+### 6.7 Getting Information
 
 ```csharp
 int count = db.Documents.Count; // Thread-safe (read lock)
@@ -1180,7 +1203,7 @@ foreach (var (name, dimensions) in db.Documents.VectorFields)
     Console.WriteLine($"Field: {name}, Dimensions: {dimensions}");
 ```
 
-### 6.7 Enumeration and LINQ Queries
+### 6.8 Enumeration and LINQ Queries
 
 `QuiverSet<TEntity>` implements `IEnumerable<TEntity>`, supporting `foreach` loops and LINQ queries.
 
@@ -1825,6 +1848,7 @@ flowchart LR
     subgraph "Read Operations (Shared Lock)"
         S["Search"]
         F["Find"]
+        EX["Exists"]
         C["Count"]
         FE["foreach / LINQ"]
         GA["GetAll"]
@@ -1839,7 +1863,7 @@ flowchart LR
         LE["LoadEntities"]
     end
 
-    S & F & C & FE & GA -->|"Parallel execution ✅"| RLock["EnterReadLock"]
+    S & F & EX & C & FE & GA -->|"Parallel execution ✅"| RLock["EnterReadLock"]
     A & AR & U & R & CL & LE -->|"Mutually exclusive 🔒"| WLock["EnterWriteLock"]
 ```
 
@@ -2437,6 +2461,8 @@ public class SearchService
 | `Remove(entity)` | `bool` | Write | Remove by entity primary key |
 | `RemoveByKey(key)` | `bool` | Write | Remove by key value |
 | `Find(key)` | `TEntity?` | Read | Find by primary key, O(1) |
+| `Exists(key)` | `bool` | Read | Check existence by primary key, O(1) (only checks `_keyToId`) |
+| `Exists(predicate)` | `bool` | Read | Check existence by condition, O(n) short-circuit (returns on match, no snapshot allocation) |
 | `Clear()` | `void` | Write | Clear all data + indices |
 
 #### Search Methods (Synchronous)

@@ -152,6 +152,45 @@ public partial class QuiverSet<TEntity>
     }
 
     /// <summary>
+    /// 判断指定主键的实体是否存在。仅查找主键字典，O(1) 复杂度，
+    /// 比 <see cref="Find"/> 少一次字典查找（无需反查实体对象）。
+    /// </summary>
+    /// <param name="key">要检查的主键值。</param>
+    /// <returns>存在返回 <c>true</c>；不存在返回 <c>false</c>。</returns>
+    public bool Exists(object key)
+    {
+        ThrowIfDisposed();
+        _lock.EnterReadLock();
+        try { return _keyToId.ContainsKey(key); }
+        finally { _lock.ExitReadLock(); }
+    }
+
+    /// <summary>
+    /// 判断是否存在满足条件的实体。在读锁内拍摄实体快照后逐一检查，
+    /// 遇到第一个匹配项即短路返回 <c>true</c>。
+    /// <para>
+    /// 复杂度 O(n)（最坏情况）。如果仅按主键判断，请使用 <see cref="Exists(object)"/> 重载（O(1)）。
+    /// </para>
+    /// </summary>
+    /// <param name="predicate">条件谓词。</param>
+    /// <returns>存在至少一个满足条件的实体返回 <c>true</c>；否则返回 <c>false</c>。</returns>
+    public bool Exists(Func<TEntity, bool> predicate)
+    {
+        ThrowIfDisposed();
+        _lock.EnterReadLock();
+        try
+        {
+            foreach (var entity in _entities.Values)
+            {
+                if (predicate(entity))
+                    return true;
+            }
+            return false;
+        }
+        finally { _lock.ExitReadLock(); }
+    }
+
+    /// <summary>
     /// 清空所有实体、主键映射和索引数据。内部 ID 计数器重置为 0。
     /// </summary>
     public void Clear()

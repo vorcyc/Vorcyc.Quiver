@@ -255,11 +255,11 @@ public partial class QuiverSet<TEntity>
         {
             var vector = _vectorGetters[name](entity);
 
-            if (vector is null)
+            if (vector is null or { Length: 0 })   // ✅ 同时处理 null 和空数组
             {
                 if (!field.Optional)
                     throw new ArgumentNullException(name,
-                        $"Vector field '{name}' is required but was null. " +
+                        $"Vector field '{name}' is required but was null or empty. " +
                         $"Mark [QuiverVector(Optional = true)] to allow null.");
                 continue;
             }
@@ -279,6 +279,7 @@ public partial class QuiverSet<TEntity>
     /// 删除实体的核心逻辑。从实体存储、主键映射和所有索引中移除。
     /// 调用方须持有写锁。
     /// </summary>
+    /// <param name="key">要删除的实体主键值。</param>
     /// <param name="logChanges">是否记录到变更日志。WAL 回放时传 <c>false</c>。</param>
     /// <returns>成功删除返回 <c>true</c>；主键不存在返回 <c>false</c>。</returns>
     private bool RemoveCore(object key, bool logChanges = true)

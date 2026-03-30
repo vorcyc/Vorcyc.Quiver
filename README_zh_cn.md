@@ -1,6 +1,6 @@
-# Vorcyc Quiver 1.1.1 技术文档
+# Vorcyc Quiver 1.1.2 技术文档
 
-![Vorcyc Quiver 1.1.1](logo.jpg "Vorcyc Quiver 1.1.1")
+![Vorcyc Quiver 1.1.2](logo.jpg "Vorcyc Quiver 1.1.2")
 
 > **产品定位**：纯 .NET 实现的嵌入式向量数据库 —— 零原生依赖，进程内运行，无需独立部署数据库服务器  
 > **框架版本**：.NET 10  

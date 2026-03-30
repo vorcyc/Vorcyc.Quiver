@@ -7,9 +7,9 @@
     <BaseOutputPath>..\bin\</BaseOutputPath>
 
     <!-- 版本号 -->
-    <Version>1.1.1</Version>
-    <AssemblyVersion>1.1.1.0</AssemblyVersion>
-    <FileVersion>1.1.1.0</FileVersion>
+    <Version>1.1.2</Version>
+    <AssemblyVersion>1.1.2.0</AssemblyVersion>
+    <FileVersion>1.1.2.0</FileVersion>
 
     <!-- 程序集信息 -->
     <AssemblyTitle>Vorcyc.Quiver</AssemblyTitle>
@@ -17,7 +17,7 @@
     <Description>A pure .NET embedded vector database — zero native dependencies, in-process, no server required. EF Core-style Code-First with declarative attributes, multiple ANN indices (Flat/HNSW/IVF/KDTree), WAL incremental persistence, and SIMD-accelerated similarity search.</Description>
     <Authors>cyclone_dll</Authors>
     <Company>Vorcyc</Company>
-    <Copyright>Copyright © Vorcyc 2025</Copyright>
+    <Copyright>Copyright © Vorcyc 2026</Copyright>
 
     <!-- NuGet 包 -->
     <PackageId>Vorcyc.Quiver</PackageId>

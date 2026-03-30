@@ -2,6 +2,7 @@
 
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Quiver.Storage;
 using Quiver.Storage.Wal;
 
@@ -85,6 +86,15 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     /// </summary>
     private readonly Dictionary<string, PropertyInfo> _keyPropCache = [];
 
+    /// <summary>
+    /// 各实体类型的 Schema 迁移规则。键为实体 CLR 类型，值为迁移规则。
+    /// <para>
+    /// 通过子类调用 <see cref="ConfigureMigration{TEntity}"/> 注册。
+    /// 加载时自动应用属性重命名和值转换，实现透明的 Schema 迁移。
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<Type, SchemaMigrationRule> _migrations = [];
+
     /// <summary>是否已释放。防止重复释放。</summary>
     private bool _disposed;
 
@@ -165,6 +175,45 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
             if (keyProp != null)
                 _keyPropCache[entityType.FullName!] = keyProp;
         }
+    }
+
+    #endregion
+
+    #region Schema 迁移配置
+
+    /// <summary>
+    /// 为指定实体类型注册 Schema 迁移规则。
+    /// <para>
+    /// 在子类构造函数中调用此方法，声明属性重命名和值转换规则。
+    /// 加载时 (<see cref="LoadAsync"/>) 会自动应用这些规则，实现透明的 Schema 迁移。
+    /// </para>
+    /// <para>
+    /// <b>简单场景（加/减字段）无需配置</b>——新增字段自动取默认值，删除字段自动跳过。
+    /// 仅在需要重命名字段或转换值类型时才需要调用此方法。
+    /// </para>
+    /// </summary>
+    /// <typeparam name="TEntity">要配置迁移的实体类型。</typeparam>
+    /// <param name="configure">迁移构建器的配置委托。</param>
+    /// <example>
+    /// <code>
+    /// public class MyDb : QuiverDbContext
+    /// {
+    ///     public QuiverSet&lt;Document&gt; Documents { get; set; }
+    ///     public MyDb() : base(new QuiverDbOptions { DatabasePath = "my.db" })
+    ///     {
+    ///         ConfigureMigration&lt;Document&gt;(m => m
+    ///             .RenameProperty("OldTitle", "Title")
+    ///             .TransformValue("Score", v => v is int i ? (double)i : v));
+    ///     }
+    /// }
+    /// </code>
+    /// </example>
+    protected void ConfigureMigration<TEntity>(Action<MigrationBuilder<TEntity>> configure)
+        where TEntity : class, new()
+    {
+        var builder = new MigrationBuilder<TEntity>();
+        configure(builder);
+        _migrations[typeof(TEntity)] = builder.Rule;
     }
 
     #endregion
@@ -334,12 +383,38 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
         // ── 阶段 1：加载全量快照 ──
         if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
         {
-            var loadedSets = await _storageProvider.LoadAsync(filePath, _typeMap);
+            // 构建迁移规则字典（类型全名 → 迁移规则），仅包含已注册迁移的类型
+            IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null;
+            if (_migrations.Count > 0)
+            {
+                migrationRules = _migrations.ToDictionary(
+                    kv => kv.Key.FullName!,
+                    kv => kv.Value);
+            }
+
+            var loadedSets = await _storageProvider.LoadAsync(filePath, _typeMap, migrationRules);
 
             foreach (var (typeName, entities) in loadedSets)
             {
                 if (!_typeMap.TryGetValue(typeName, out var type) || !_sets.TryGetValue(type, out var set))
                     continue;
+
+                // 应用值转换规则（如果存在）
+                if (_migrations.TryGetValue(type, out var rule) && rule.ValueTransforms.Count > 0)
+                {
+                    foreach (var entity in entities)
+                    {
+                        foreach (var (propName, transform) in rule.ValueTransforms)
+                        {
+                            var prop = type.GetProperty(propName);
+                            if (prop == null) continue;
+                            var oldValue = prop.GetValue(entity);
+                            var newValue = transform(oldValue);
+                            if (!Equals(oldValue, newValue))
+                                prop.SetValue(entity, newValue);
+                        }
+                    }
+                }
 
                 var loadMethod = set.GetType().GetMethod("LoadEntities", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 var castMethod = typeof(Enumerable).GetMethod("Cast")!.MakeGenericMethod(type);
@@ -359,6 +434,10 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     /// 回放期间使用 <c>ReplayAdd/ReplayRemove/ReplayClear</c> 方法，
     /// 不触发变更日志记录，避免循环写入。
     /// </para>
+    /// <para>
+    /// 若存在 Schema 迁移规则，回放时会自动应用属性重命名（修正 JSON 属性名）
+    /// 和值转换（对反序列化后的实体执行 <see cref="SchemaMigrationRule.ValueTransforms"/>）。
+    /// </para>
     /// </summary>
     private void ReplayWal(string walFilePath)
     {
@@ -372,13 +451,52 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                 !_sets.TryGetValue(type, out var set))
                 continue;
 
+            // 获取迁移规则（可能为 null）
+            _migrations.TryGetValue(type, out var rule);
+
             switch (entry.Operation)
             {
                 case WalOperation.Add:
                     {
-                        // 反序列化实体并调用 ReplayAdd
-                        var entity = JsonSerializer.Deserialize(entry.PayloadJson, type, WalJsonOptions);
+                        var json = entry.PayloadJson;
+
+                        // 存在重命名规则时，修正 WAL JSON 中的旧属性名
+                        if (rule != null && rule.PropertyRenames.Count > 0)
+                        {
+                            var node = JsonNode.Parse(json)!.AsObject();
+                            var namingPolicy = WalJsonOptions.PropertyNamingPolicy;
+                            foreach (var (oldName, newName) in rule.PropertyRenames)
+                            {
+                                var oldJsonName = namingPolicy?.ConvertName(oldName) ?? oldName;
+                                var newJsonName = namingPolicy?.ConvertName(newName) ?? newName;
+                                if (node.ContainsKey(oldJsonName))
+                                {
+                                    var val = node[oldJsonName];
+                                    node.Remove(oldJsonName);
+                                    node[newJsonName] = val?.DeepClone();
+                                }
+                            }
+                            json = node.ToJsonString(WalJsonOptions);
+                        }
+
+                        // 反序列化实体
+                        var entity = JsonSerializer.Deserialize(json, type, WalJsonOptions);
                         if (entity == null) continue;
+
+                        // 应用值转换规则
+                        if (rule != null && rule.ValueTransforms.Count > 0)
+                        {
+                            foreach (var (propName, transform) in rule.ValueTransforms)
+                            {
+                                var prop = type.GetProperty(propName);
+                                if (prop == null) continue;
+                                var oldValue = prop.GetValue(entity);
+                                var newValue = transform(oldValue);
+                                if (!Equals(oldValue, newValue))
+                                    prop.SetValue(entity, newValue);
+                            }
+                        }
+
                         var replayAdd = set.GetType().GetMethod("ReplayAdd", BindingFlags.Instance | BindingFlags.NonPublic)!;
                         replayAdd.Invoke(set, [entity]);
                         break;

@@ -1,13 +1,13 @@
-﻿# Vorcyc Quiver 1.1.2 Technical Documentation
+﻿# Vorcyc Quiver 1.2.2 Technical Documentation
 
-![Vorcyc Quiver 1.1.2](logo.jpg "Vorcyc Quiver 1.1.2")
+![Vorcyc Quiver 1.2.2](logo.jpg "Vorcyc Quiver 1.2.2")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
 > **Namespace**: `Vorcyc.Quiver`  
 > **Design Philosophy**: Similar to EF Core's `DbContext` pattern, achieving automatic discovery, index construction, and persistence of the vector database through declarative attribute annotations  
-> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · Multiple persistence formats (JSON / XML / Binary) · WAL incremental persistence · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation  
-> **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery`  
+> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · Multiple persistence formats (JSON / XML / Binary) · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation  
+> **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery` `Schema Migration`  
 > **Name Origin**: Quiver — a container for arrows (Arrow), and the mathematical essence of a vector is an arrow
 
 ### Creation Overview
@@ -36,6 +36,7 @@ Therefore, I decided to design a brand-new vector database framework that would 
 - **Flexible Persistence Options** — Supports JSON (human-readable for debugging), XML (compatibility), and Binary (high-performance production) storage formats, plus a WAL (Write-Ahead Log) incremental persistence mechanism that reduces persistence complexity from O(N) to O(delta) in high-frequency write scenarios.
 - **Out-of-the-box Concurrency Safety** — `QuiverSet<T>` internally implements reader-writer separation locks via `ReaderWriterLockSlim`, making concurrent multi-threaded searching and writing inherently safe without external locking.
 - **SIMD Hardware Acceleration** — Leverages `TensorPrimitives`-based SIMD instructions to accelerate vector similarity computation and L2 normalization, fully utilizing modern CPU vectorization capabilities.
+- **Schema Migration** — Supports property renaming and value transformation during loading via `ConfigureMigration<T>()`. Adding or removing fields requires no configuration — new fields get default values, removed fields are silently skipped.
 
 **Typical Use Cases**: Semantic search, RAG (Retrieval-Augmented Generation), face recognition, image-to-image search, recommendation systems, multimodal retrieval, etc.
 
@@ -66,13 +67,18 @@ Therefore, I decided to design a brand-new vector database framework that would 
    - [Default Field Convenience Methods](#76-default-field-convenience-methods)
 8. [Persistent Storage](#8-persistent-storage)
    - [WAL Incremental Persistence](#86-wal-incremental-persistence)
-9. [Multi-Vector Field Support](#9-multi-vector-field-support)
-10. [Thread Safety and Concurrency](#10-thread-safety-and-concurrency)
-11. [Lifecycle Management](#11-lifecycle-management)
-12. [Configuration Options](#12-configuration-options)
-13. [Internal Implementation Details](#13-internal-implementation-details)
-14. [Complete Examples](#14-complete-examples)
-15. [API Reference Cheat Sheet](#15-api-reference-cheat-sheet)
+9. [Schema Migration](#9-schema-migration)
+   - [Automatic Handling (Add / Remove Fields)](#91-automatic-handling-add--remove-fields)
+   - [Property Renaming](#92-property-renaming)
+   - [Value Transformation](#93-value-transformation)
+   - [Combined Usage](#94-combined-usage)
+10. [Multi-Vector Field Support](#10-multi-vector-field-support)
+11. [Thread Safety and Concurrency](#11-thread-safety-and-concurrency)
+12. [Lifecycle Management](#12-lifecycle-management)
+13. [Configuration Options](#13-configuration-options)
+14. [Internal Implementation Details](#14-internal-implementation-details)
+15. [Complete Examples](#15-complete-examples)
+16. [API Reference Cheat Sheet](#16-api-reference-cheat-sheet)
 
 ---
 
@@ -145,6 +151,8 @@ graph TB
 | `WriteAheadLog` | `internal sealed class` | WAL file read/write engine, custom binary format + CRC32 checksum, crash recovery safe |
 | `WalEntry` | `internal sealed record` | WAL change record, contains operation type, target type name, JSON payload |
 | `WalOperation` | `internal enum` | WAL operation types: Add / Remove / Clear |
+| `MigrationBuilder<T>` | `class` | Fluent API builder for Schema migration rules (property rename + value transform) |
+| `SchemaMigrationRule` | `internal class` | Stores migration rules for a single entity type: property rename map + value transform functions |
 
 ### 1.3 Class Relationship Diagram
 
@@ -164,8 +172,20 @@ classDiagram
         +LoadAsync(path?) Task
         +Dispose()
         +DisposeAsync() ValueTask
+        #ConfigureMigration~TEntity~(configure) void
         -InitializeSets()
         -ReplayWal(walFilePath)
+    }
+
+    class MigrationBuilder~TEntity~ {
+        +RenameProperty(oldName, newName) MigrationBuilder
+        +TransformValue(propName, transform) MigrationBuilder
+    }
+
+    class SchemaMigrationRule {
+        +Dictionary PropertyRenames
+        +Dictionary ValueTransforms
+        +Dictionary ReverseRenames
     }
 
     class QuiverSet~TEntity~ {
@@ -1688,15 +1708,111 @@ flowchart LR
     DRAIN --> DONE
 ```
 
-> **Recommended threshold range**: 1,000 ~ 100,000, depending on individual record size (vector dimensions) and loading speed requirements. Default is 10,000.
+ **Recommended threshold range**: 1,000 ~ 100,000, depending on individual record size (vector dimensions) and loading speed requirements. Default is 10,000.
 
 ---
 
-## 9. Multi-Vector Field Support
+## 9. Schema Migration
+
+When entity structures evolve (adding/removing/renaming fields, changing value types), Quiver provides a transparent Schema migration mechanism that automatically handles differences during `LoadAsync` — no manual data file editing required.
+
+### 9.1 Automatic Handling (Add / Remove Fields)
+
+**Adding or removing fields requires zero configuration** — Quiver handles them automatically:
+
+| Scenario | Behavior | Configuration Required |
+|----------|----------|----------------------|
+| **New field added** to entity | New field gets its CLR default value (`null`, `0`, `""`, etc.) | ❌ None |
+| **Old field removed** from entity | Old field in the file is silently skipped during loading | ❌ None |
+
+```csharp
+// V1 entity
+public class Document
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+
+    [QuiverVector(384, DistanceMetric.Cosine)]
+    public float[] Embedding { get; set; } = [];
+}
+
+// V2 entity — added Category, removed nothing
+public class Document
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;  // New field → default ""
+
+    [QuiverVector(384, DistanceMetric.Cosine)]
+    public float[] Embedding { get; set; } = [];
+}
+// Loading V1 data into V2 entity: Category = "" (default), everything else loads normally.
+```
+
+### 9.2 Property Renaming
+
+When a property is renamed (e.g., `OldTitle` → `Title`), declare the mapping in the context constructor via `ConfigureMigration<T>()`:
+
+```csharp
+public class MyDb : QuiverDbContext
+{
+    public QuiverSet<Document> Documents { get; set; } = null!;
+
+    public MyDb() : base(new QuiverDbOptions { DatabasePath = "my.db" })
+    {
+        ConfigureMigration<Document>(m => m
+            .RenameProperty("OldTitle", "Title"));
+    }
+}
+```
+
+During `LoadAsync`, the storage provider maps the old property name in the file to the new property name in the current CLR type. Works with all three storage formats (JSON / XML / Binary) and WAL replay.
+
+### 9.3 Value Transformation
+
+When a property's type or format changes (e.g., `int` → `double`, string format migration), declare a value transform:
+
+```csharp
+public class MyDb : QuiverDbContext
+{
+    public QuiverSet<Document> Documents { get; set; } = null!;
+
+    public MyDb() : base(new QuiverDbOptions { DatabasePath = "my.db" })
+    {
+        ConfigureMigration<Document>(m => m
+            .TransformValue("Score", v => v is int i ? (double)i : v));
+    }
+}
+```
+
+Value transforms are applied **after** deserialization — the transform function receives the loaded value and returns the converted value.
+
+### 9.4 Combined Usage
+
+Rename and transform can be chained together:
+
+```csharp
+ConfigureMigration<Document>(m => m
+    .RenameProperty("OldTitle", "Title")
+    .RenameProperty("OldScore", "Score")
+    .TransformValue("Score", v => v is int i ? (double)i : v));
+```
+
+**Processing Order**:
+1. **Property renaming** — applied during deserialization (storage provider maps old names to new names)
+2. **Value transformation** — applied after deserialization (context iterates entities and transforms values)
+
+> ⚠️ Rename mapping uses the **CLR property name** (not the serialized name). For example, even if JSON uses camelCase `"oldTitle"`, the `RenameProperty` call uses `"OldTitle"` (PascalCase CLR name).
+
+---
+
+## 10. Multi-Vector Field Support
 
 An entity can have multiple `[QuiverVector]` properties annotated, each field **maintaining its own independent index**, supporting different dimensions, metrics, and indexing strategies.
 
-### 9.1 Defining Multi-Vector Entities
+### 10.1 Defining Multi-Vector Entities
 
 ```csharp
 public class MultiModalItem
@@ -1718,7 +1834,7 @@ public class MultiModalItem
 }
 ```
 
-### 9.2 Internal Structure
+### 10.2 Internal Structure
 
 ```mermaid
 graph TD
@@ -1740,7 +1856,7 @@ graph TD
     ADD --> AI
 ```
 
-### 9.3 Per-Field Search
+### 10.3 Per-Field Search
 
 ```csharp
 // Search by text vector
@@ -1755,7 +1871,7 @@ var audioResults = db.Items.Search(e => e.AudioEmbedding, audioQuery, topK: 5);
 // Search results from the three fields are mutually independent (different vector spaces)
 ```
 
-### 9.4 Viewing Vector Field Information
+### 10.4 Viewing Vector Field Information
 
 ```csharp
 foreach (var (name, dimensions) in db.Items.VectorFields)
@@ -1766,7 +1882,7 @@ foreach (var (name, dimensions) in db.Items.VectorFields)
 // Field: AudioEmbedding, Dimensions: 256
 ```
 
-### 9.5 Optional Vector Fields
+### 10.5 Optional Vector Fields
 
 Mark a vector field as nullable with `Optional = true`. Useful when not all entities have a particular feature — e.g., an image collection where only some images contain faces.
 
@@ -1837,9 +1953,9 @@ var faceResults = db.Images.Search(e => e.FaceEmbedding, faceQuery, topK: 10);
 
 ---
 
-## 10. Thread Safety and Concurrency
+## 11. Thread Safety and Concurrency
 
-### 10.1 Lock Model
+### 11.1 Lock Model
 
 `QuiverSet<TEntity>` internally uses `ReaderWriterLockSlim` to implement reader-writer separation:
 
@@ -1867,7 +1983,7 @@ flowchart LR
     A & AR & U & R & CL & LE -->|"Mutually exclusive 🔒"| WLock["EnterWriteLock"]
 ```
 
-### 10.2 Concurrency Safety Examples
+### 11.2 Concurrency Safety Examples
 
 ```csharp
 var db = new MyDocumentDb();
@@ -1897,11 +2013,11 @@ var readerTask = Task.Run(() =>
 await Task.WhenAll(writerTask, readerTask);
 ```
 
-### 10.3 Dispose Thread Safety
+### 11.3 Dispose Thread Safety
 
 `QuiverSet` uses `Interlocked.Exchange(ref _disposed, 1)` to guarantee concurrent Dispose safety. All operation entry points call `ThrowIfDisposed()`, using `Volatile.Read` to ensure cross-thread visibility.
 
-### 10.4 Concurrency Performance Reference
+### 11.4 Concurrency Performance Reference
 
 | Test Scenario | Data Size | Configuration | Result |
 |--------------|-----------|---------------|--------|
@@ -1911,9 +2027,9 @@ await Task.WhenAll(writerTask, readerTask);
 
 ---
 
-## 11. Lifecycle Management
+## 12. Lifecycle Management
 
-### 11.1 QuiverDbContext Lifecycle
+### 12.1 QuiverDbContext Lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -1939,7 +2055,7 @@ stateDiagram-v2
 | `Dispose()` | ❌ No save | No save, only releases resources | When manual save timing control is needed |
 | `DisposeAsync()` | ✅ Save then release | Calls `SaveChangesAsync()` for incremental save | **Recommended**, use with `await using` |
 
-### 11.2 Recommended Usage
+### 12.2 Recommended Usage
 
 ```csharp
 // ✅ Recommended: await using with auto-save (full snapshot mode)
@@ -1969,13 +2085,13 @@ finally
 }
 ```
 
-### 11.3 QuiverSet Disposal
+### 12.3 QuiverSet Disposal
 
 `QuiverSet` implements `IDisposable`, releasing the internal `ReaderWriterLockSlim`. All operations throw `ObjectDisposedException` after disposal.
 
 ---
 
-## 12. Configuration Options
+## 13. Configuration Options
 
 `QuiverDbOptions` provides the following configurations:
 
@@ -2025,9 +2141,9 @@ var options = new QuiverDbOptions
 
 ---
 
-## 13. Internal Implementation Details
+## 14. Internal Implementation Details
 
-### 13.1 Expression Tree Compiled Property Accessors
+### 14.1 Expression Tree Compiled Property Accessors
 
 The framework uses expression trees to compile high-performance accessors for each primary key and vector property, replacing runtime reflection calls:
 
@@ -2047,7 +2163,7 @@ private static Func<TEntity, TResult> CompileGetter<TResult>(PropertyInfo prop)
 }
 ```
 
-### 13.2 SimilarityFunc Delegate Design
+### 14.2 SimilarityFunc Delegate Design
 
 Uses delegates with `ReadOnlySpan<float>` parameter types that can directly bind to `TensorPrimitives` method groups without additional lambda wrapping:
 
@@ -2063,7 +2179,7 @@ SimilarityFunc simFunc = TensorPrimitives.CosineSimilarity;
 SimilarityFunc simFunc = (a, b) => 1f / (1f + TensorPrimitives.Distance(a, b));
 ```
 
-### 13.3 HNSW Level Random Generation
+### 14.3 HNSW Level Random Generation
 
 Levels follow an exponential decay distribution, ensuring upper layers are sparse and lower layers are dense:
 
@@ -2074,7 +2190,7 @@ where ml = 1 / ln(M)
 
 Most nodes (~93.75% when M=16) exist only on layer 0, while a few nodes exist on higher layers serving as "highway" entry points.
 
-### 13.4 IVF K-Means++ Initialization
+### 14.4 IVF K-Means++ Initialization
 
 Converges faster and produces higher-quality clusters than random initialization:
 
@@ -2083,7 +2199,7 @@ Converges faster and produces higher-quality clusters than random initialization
 3. Select the next centroid with probability proportional to D(x)²
 4. Repeat until K centroids are selected
 
-### 13.5 KDTree Pruning Optimization
+### 14.5 KDTree Pruning Optimization
 
 Uses split hyperplane distance for pruning during search:
 
@@ -2092,7 +2208,7 @@ Uses split hyperplane distance for pruning during search:
 - For the other side: explore only when the heap is not full **or** `|diff| < current search radius`
 - Can skip large numbers of subtrees in low dimensions; pruning fails in high dimensions
 
-### 13.6 StorageProviderFactory
+### 14.6 StorageProviderFactory
 
 Simple factory pattern, invoked during `QuiverDbContext` construction:
 
@@ -2106,7 +2222,7 @@ internal static IStorageProvider Create(QuiverDbOptions options) => options.Stor
 };
 ```
 
-### 13.7 Change Tracking and WAL Replay
+### 14.7 Change Tracking and WAL Replay
 
 The `_changeLog` inside `QuiverSet<T>` records each write operation within the write lock, enabling incremental persistence:
 
@@ -2156,7 +2272,7 @@ internal List<(byte Op, object? Key, object? Entity)> DrainChanges()
 - `ReplayRemove`: Returns `false` when primary key doesn't exist (entity may be re-added in subsequent WAL records)
 - `ReplayClear`: Directly clears all data and indices
 
-### 13.8 Atomic Write (SaveAsync)
+### 14.8 Atomic Write (SaveAsync)
 
 `SaveAsync` uses a strategy of writing to a temporary file first, then atomically replacing, preventing data corruption from mid-write crashes:
 
@@ -2166,7 +2282,7 @@ await _storageProvider.SaveAsync(tempPath, setsData);
 File.Move(tempPath, filePath, overwrite: true); // Atomic replace
 ```
 
-### 13.9 WAL CRC32 Checksum
+### 14.9 WAL CRC32 Checksum
 
 Each WAL record's data area (SeqNo through PayloadJson) is checksummed using `System.IO.Hashing.Crc32`, appended at the end of the record:
 
@@ -2182,9 +2298,9 @@ During reading, reverse verification is performed — a CRC mismatch is treated 
 
 ---
 
-## 14. Complete Examples
+## 15. Complete Examples
 
-### 14.1 Face Recognition System
+### 15.1 Face Recognition System
 
 ```csharp
 using Vorcyc.Quiver;
@@ -2243,7 +2359,7 @@ else
 }
 ```
 
-### 14.2 Multimodal Search Engine (HNSW Index)
+### 15.2 Multimodal Search Engine (HNSW Index)
 
 ```csharp
 using Vorcyc.Quiver;
@@ -2308,7 +2424,7 @@ var filtered = db.Items.Search(
     overFetchMultiplier: 8);
 ```
 
-### 14.3 Simplifying Context with Primary Constructor
+### 15.3 Simplifying Context with Primary Constructor
 
 ```csharp
 public class MyFaceDb(string path, StorageFormat format)
@@ -2327,7 +2443,7 @@ var jsonDb = new MyFaceDb("data.json", StorageFormat.Json);
 var binaryDb = new MyFaceDb("data.vdb", StorageFormat.Binary);
 ```
 
-### 14.4 WAL Incremental Persistence Service
+### 15.4 WAL Incremental Persistence Service
 
 ```csharp
 using Vorcyc.Quiver;
@@ -2383,7 +2499,7 @@ await db.CompactAsync(); // Full snapshot + clear WAL
 // Scope ends -> DisposeAsync -> SaveChangesAsync (auto-save unpersisted changes)
 ```
 
-### 14.5 Async Concurrent Search Service
+### 15.5 Async Concurrent Search Service
 
 ```csharp
 public class SearchService
@@ -2421,7 +2537,7 @@ public class SearchService
 
 ---
 
-## 15. API Reference Cheat Sheet
+## 16. API Reference Cheat Sheet
 
 ### QuiverDbContext
 

@@ -1,6 +1,7 @@
 ﻿namespace Vorcyc.Quiver.Storage;
 
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 /// <summary>
 /// JSON 格式的存储提供者，实现 <see cref="IStorageProvider"/> 接口。
@@ -62,6 +63,7 @@ internal class JsonStorageProvider(JsonSerializerOptions jsonOptions) : IStorage
     /// <list type="number">
     ///   <item>异步读取文件全部文本并解析为 <see cref="JsonDocument"/>。</item>
     ///   <item>遍历根对象的每个属性，通过 <paramref name="typeMap"/> 匹配对应的 CLR 类型。</item>
+    ///   <item>若存在迁移规则，按重命名映射修正 JSON 属性名后再反序列化。</item>
     ///   <item>逐元素反序列化为实体对象；未匹配的类型名称将被跳过（前向兼容）。</item>
     /// </list>
     /// </para>
@@ -71,8 +73,15 @@ internal class JsonStorageProvider(JsonSerializerOptions jsonOptions) : IStorage
     /// 类型名称到 CLR <see cref="Type"/> 的映射字典。
     /// <para>文件中存在但字典中缺失的类型将被跳过，确保前向兼容。</para>
     /// </param>
+    /// <param name="migrationRules">
+    /// 可选的 Schema 迁移规则字典。键为类型全名，值为迁移规则。
+    /// 包含属性重命名映射，加载时将 JSON 中的旧属性名转换为新属性名后再反序列化。
+    /// </param>
     /// <returns>加载后的向量集合字典。键为类型名称，值为反序列化后的实体对象列表。</returns>
-    public async Task<Dictionary<string, List<object>>> LoadAsync(string filePath, IReadOnlyDictionary<string, Type> typeMap)
+    public async Task<Dictionary<string, List<object>>> LoadAsync(
+        string filePath,
+        IReadOnlyDictionary<string, Type> typeMap,
+        IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null)
     {
         var result = new Dictionary<string, List<object>>();
 
@@ -87,11 +96,46 @@ internal class JsonStorageProvider(JsonSerializerOptions jsonOptions) : IStorage
             // 跳过类型映射中不存在的集合（前向兼容：文件包含新增类型时不报错）
             if (!typeMap.TryGetValue(prop.Name, out var type)) continue;
 
+            // 获取当前类型的迁移规则（如果有）
+            SchemaMigrationRule? rule = null;
+            if (migrationRules != null)
+                migrationRules.TryGetValue(prop.Name, out rule);
+
+            var hasRenames = rule != null && rule.PropertyRenames.Count > 0;
+
             // 逐个反序列化数组中的实体对象
             var entities = new List<object>();
             foreach (var element in prop.Value.EnumerateArray())
             {
-                var entity = element.Deserialize(type, jsonOptions);
+                object? entity;
+
+                if (hasRenames)
+                {
+                    // 存在重命名规则时，通过 JsonNode 修正属性名后再反序列化
+                    var node = JsonNode.Parse(element.GetRawText())!.AsObject();
+                    var namingPolicy = jsonOptions.PropertyNamingPolicy;
+
+                    foreach (var (oldName, newName) in rule!.PropertyRenames)
+                    {
+                        // 将 CLR 属性名通过命名策略转换为 JSON 属性名
+                        var oldJsonName = namingPolicy?.ConvertName(oldName) ?? oldName;
+                        var newJsonName = namingPolicy?.ConvertName(newName) ?? newName;
+
+                        if (node.ContainsKey(oldJsonName))
+                        {
+                            var val = node[oldJsonName];
+                            node.Remove(oldJsonName);
+                            node[newJsonName] = val?.DeepClone();
+                        }
+                    }
+
+                    entity = node.Deserialize(type, jsonOptions);
+                }
+                else
+                {
+                    entity = element.Deserialize(type, jsonOptions);
+                }
+
                 if (entity != null) entities.Add(entity);
             }
             result[prop.Name] = entities;

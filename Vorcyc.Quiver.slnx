@@ -4,6 +4,7 @@
     <File Path="README.md" />
     <File Path="README_Simple.md" />
     <File Path="README_zh_cn.md" />
+    <File Path="TechnicalDocument.md" />
   </Folder>
   <Folder Name="/TESTS/">
     <Project Path="TESTS/all_basic_tests/all_basic_tests.csproj" />

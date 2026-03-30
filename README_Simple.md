@@ -1,6 +1,6 @@
-﻿# Vorcyc Quiver 1.1.2
+﻿# Vorcyc Quiver 1.2.2
 
-![Vorcyc Quiver 1.1.2](logo.jpg "Vorcyc Quiver 1.1.2")
+![Vorcyc Quiver 1.2.2](logo.jpg "Vorcyc Quiver 1.2.2")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
@@ -17,6 +17,7 @@
 - **Flexible Persistence** — JSON (readable), XML (compatible), Binary (high-performance) formats, plus WAL incremental persistence reducing complexity from O(N) to O(Δ).
 - **Concurrency Safe** — `QuiverSet<T>` uses `ReaderWriterLockSlim` internally; concurrent reads and writes are safe out-of-the-box.
 - **SIMD Accelerated** — `TensorPrimitives`-based SIMD for vector similarity and L2 normalization.
+- **Schema Migration** — Property rename and value transform via `ConfigureMigration<T>()`. Adding/removing fields requires no configuration.
 
 **Typical Use Cases**: Semantic search · RAG · Face recognition · Image-to-image search · Recommendation systems · Multimodal retrieval
 
@@ -205,6 +206,39 @@ var options = new QuiverDbOptions
     WalFlushToDisk = true
 };
 ```
+
+---
+
+## 🔄 Schema Migration
+
+When entity structures evolve, Quiver handles differences transparently during `LoadAsync`.
+
+**Automatic (zero config)**:
+- New field added → gets CLR default value
+- Old field removed → silently skipped
+
+**Property Renaming & Value Transform**:
+
+```csharp
+public class MyDb : QuiverDbContext
+{
+    public QuiverSet<Document> Documents { get; set; } = null!;
+
+    public MyDb() : base(new QuiverDbOptions { DatabasePath = "my.db" })
+    {
+        ConfigureMigration<Document>(m => m
+            .RenameProperty("OldTitle", "Title")
+            .TransformValue("Score", v => v is int i ? (double)i : v));
+    }
+}
+```
+
+| Scenario | Handling | Config Required |
+|----------|----------|----------------|
+| Add field | Default value | ❌ None |
+| Remove field | Silently skipped | ❌ None |
+| Rename field | `RenameProperty()` | ✅ Yes |
+| Change type/format | `TransformValue()` | ✅ Yes |
 
 ---
 

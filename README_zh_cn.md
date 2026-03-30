@@ -1,13 +1,13 @@
-# Vorcyc Quiver 1.1.2 技术文档
+# Vorcyc Quiver 1.2.2 技术文档
 
-![Vorcyc Quiver 1.1.2](logo.jpg "Vorcyc Quiver 1.1.2")
+![Vorcyc Quiver 1.2.2](logo.jpg "Vorcyc Quiver 1.2.2")
 
 > **产品定位**：纯 .NET 实现的嵌入式向量数据库 —— 零原生依赖，进程内运行，无需独立部署数据库服务器  
 > **框架版本**：.NET 10  
 > **命名空间**：`Vorcyc.Quiver`  
 > **设计理念**：类似 EF Core 的 `DbContext` 模式，通过声明式属性标记实现向量数据库的自动发现、索引构建和持久化  
-> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 多种持久化格式（JSON / XML / Binary） · WAL 增量持久化 · 读写分离锁并发安全 · SIMD 加速相似度计算  
-> **关键字**：`嵌入式向量数据库` `纯 .NET` `ANN` `近似最近邻搜索` `相似度检索` `HNSW` `IVF` `KDTree` `Code-First` `EF Core 风格` `Embedding` `语义搜索` `人脸识别` `以图搜图` `RAG` `SIMD` `WAL` `Write-Ahead Log` `增量持久化` `崩溃恢复`  
+> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 多种持久化格式（JSON / XML / Binary） · WAL 增量持久化 · Schema Migration（属性重命名 / 值转换） · 读写分离锁并发安全 · SIMD 加速相似度计算  
+> **关键字**：`嵌入式向量数据库` `纯 .NET` `ANN` `近似最近邻搜索` `相似度检索` `HNSW` `IVF` `KDTree` `Code-First` `EF Core 风格` `Embedding` `语义搜索` `人脸识别` `以图搜图` `RAG` `SIMD` `WAL` `Write-Ahead Log` `增量持久化` `崩溃恢复` `Schema Migration`
 > **释名**：Quiver —— 箭袋，装箭（Arrow）的容器，向量的数学本质就是箭头
 
 ### 创作梗概
@@ -36,6 +36,7 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 - **灵活的持久化方案** —— 支持 JSON（可读调试）、XML（兼容性）、Binary（高性能生产）三种存储格式，以及 WAL（Write-Ahead Log）增量持久化机制，高频写入场景下持久化复杂度从 O(N) 降至 O(Δ)。
 - **开箱即用的并发安全** —— `QuiverSet<T>` 内部通过 `ReaderWriterLockSlim` 实现读写分离锁，多线程并发搜索与写入天然安全，无需外部加锁。
 - **SIMD 硬件加速** —— 基于 `TensorPrimitives` 的 SIMD 指令加速向量相似度计算与 L2 归一化，充分利用现代 CPU 的向量化能力。
+- **Schema Migration** —— 支持加载时通过 `ConfigureMigration<T>()` 声明属性重命名和值转换规则。新增/删除字段无需配置——新字段取默认值，删除字段静默跳过。
 
 **典型应用场景**：语义搜索、RAG（检索增强生成）、人脸识别、以图搜图、推荐系统、多模态检索等。
 
@@ -66,13 +67,18 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
    - [默认字段便捷方法](#76-默认字段便捷方法)
 8. [持久化存储](#8-持久化存储)
    - [WAL 增量持久化](#86-wal-增量持久化)
-9. [多向量字段支持](#9-多向量字段支持)
-10. [线程安全与并发](#10-线程安全与并发)
-11. [生命周期管理](#11-生命周期管理)
-12. [配置选项](#12-配置选项)
-13. [内部实现细节](#13-内部实现细节)
-14. [完整示例](#14-完整示例)
-15. [API 参考速查表](#15-api-参考速查表)
+9. [Schema 迁移](#9-schema-迁移)
+   - [自动处理（增 / 删字段）](#91-自动处理增--删字段)
+   - [属性重命名](#92-属性重命名)
+   - [值转换](#93-值转换)
+   - [组合使用](#94-组合使用)
+10. [多向量字段支持](#10-多向量字段支持)
+11. [线程安全与并发](#11-线程安全与并发)
+12. [生命周期管理](#12-生命周期管理)
+13. [配置选项](#13-配置选项)
+14. [内部实现细节](#14-内部实现细节)
+15. [完整示例](#15-完整示例)
+16. [API 参考速查表](#16-api-参考速查表)
 
 ---
 
@@ -145,6 +151,8 @@ graph TB
 | `WriteAheadLog` | `internal sealed class` | WAL 文件读写引擎，自定义二进制格式 + CRC32 校验，崩溃恢复安全 |
 | `WalEntry` | `internal sealed record` | WAL 变更记录，包含操作类型、目标类型名、JSON 载荷 |
 | `WalOperation` | `internal enum` | WAL 操作类型：Add / Remove / Clear |
+| `MigrationBuilder<T>` | `class` | Schema 迁移的流式 API 构建器（属性重命名 + 值转换） |
+| `SchemaMigrationRule` | `internal class` | 存储单个实体类型的迁移规则：属性重命名映射 + 值转换函数 |
 
 ### 1.3 类关系图
 
@@ -164,8 +172,20 @@ classDiagram
         +LoadAsync(path?) Task
         +Dispose()
         +DisposeAsync() ValueTask
+        #ConfigureMigration~TEntity~(configure) void
         -InitializeSets()
         -ReplayWal(walFilePath)
+    }
+
+    class MigrationBuilder~TEntity~ {
+        +RenameProperty(oldName, newName) MigrationBuilder
+        +TransformValue(propName, transform) MigrationBuilder
+    }
+
+    class SchemaMigrationRule {
+        +Dictionary PropertyRenames
+        +Dictionary ValueTransforms
+        +Dictionary ReverseRenames
     }
 
     class QuiverSet~TEntity~ {
@@ -1691,11 +1711,107 @@ flowchart LR
 
 ---
 
-## 9. 多向量字段支持
+## 9. Schema 迁移
+
+当实体结构演进时（增/删/重命名字段、更改值类型），Quiver 提供透明的 Schema 迁移机制，在 `LoadAsync` 时自动处理差异——无需手动编辑数据文件。
+
+### 9.1 自动处理（增 / 删字段）
+
+**新增或删除字段无需任何配置**——Quiver 自动处理：
+
+| 场景 | 行为 | 是否需要配置 |
+|------|------|-------------|
+| 实体**新增字段** | 新字段取 CLR 默认值（`null`、`0`、`""` 等） | ❌ 无需 |
+| 实体**删除旧字段** | 文件中的旧字段在加载时静默跳过 | ❌ 无需 |
+
+```csharp
+// V1 实体
+public class Document
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+
+    [QuiverVector(384, DistanceMetric.Cosine)]
+    public float[] Embedding { get; set; } = [];
+}
+
+// V2 实体 —— 新增 Category，未删除任何字段
+public class Document
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;  // 新字段 → 默认 ""
+
+    [QuiverVector(384, DistanceMetric.Cosine)]
+    public float[] Embedding { get; set; } = [];
+}
+// 使用 V2 实体加载 V1 数据：Category = ""（默认值），其余字段正常加载。
+```
+
+### 9.2 属性重命名
+
+当属性被重命名时（如 `OldTitle` → `Title`），在上下文构造函数中通过 `ConfigureMigration<T>()` 声明映射：
+
+```csharp
+public class MyDb : QuiverDbContext
+{
+    public QuiverSet<Document> Documents { get; set; } = null!;
+
+    public MyDb() : base(new QuiverDbOptions { DatabasePath = "my.db" })
+    {
+        ConfigureMigration<Document>(m => m
+            .RenameProperty("OldTitle", "Title"));
+    }
+}
+```
+
+`LoadAsync` 时，存储提供者会将文件中的旧属性名映射到当前 CLR 类型的新属性名。三种存储格式（JSON / XML / Binary）和 WAL 回放均支持。
+
+### 9.3 值转换
+
+当属性的类型或格式发生变化时（如 `int` → `double`、字符串格式迁移），声明值转换规则：
+
+```csharp
+public class MyDb : QuiverDbContext
+{
+    public QuiverSet<Document> Documents { get; set; } = null!;
+
+    public MyDb() : base(new QuiverDbOptions { DatabasePath = "my.db" })
+    {
+        ConfigureMigration<Document>(m => m
+            .TransformValue("Score", v => v is int i ? (double)i : v));
+    }
+}
+```
+
+值转换在**反序列化之后**应用——转换函数接收加载的值并返回转换后的值。
+
+### 9.4 组合使用
+
+重命名和转换可链式组合：
+
+```csharp
+ConfigureMigration<Document>(m => m
+    .RenameProperty("OldTitle", "Title")
+    .RenameProperty("OldScore", "Score")
+    .TransformValue("Score", v => v is int i ? (double)i : v));
+```
+
+**处理顺序**：
+1. **属性重命名** —— 在反序列化阶段应用（存储提供者将旧名映射为新名）
+2. **值转换** —— 在反序列化完成后应用（上下文遍历实体并执行转换）
+
+> ⚠️ 重命名映射使用 **CLR 属性名**（非序列化后的名称）。例如即使 JSON 使用驼峰 `"oldTitle"`，`RenameProperty` 调用仍使用 `"OldTitle"`（PascalCase CLR 名称）。
+
+---
+
+## 10. 多向量字段支持
 
 一个实体可标记多个 `[QuiverVector]` 属性，每个字段**独立维护索引**，支持不同的维度、度量和索引策略。
 
-### 9.1 定义多向量实体
+### 10.1 定义多向量实体
 
 ```csharp
 public class MultiModalItem
@@ -1717,7 +1833,7 @@ public class MultiModalItem
 }
 ```
 
-### 9.2 内部结构
+### 10.2 内部结构
 
 ```mermaid
 graph TD
@@ -1739,7 +1855,7 @@ graph TD
     ADD --> AI
 ```
 
-### 9.3 分字段搜索
+### 10.3 分字段搜索
 
 ```csharp
 // 按文本向量搜索
@@ -1754,7 +1870,7 @@ var audioResults = db.Items.Search(e => e.AudioEmbedding, audioQuery, topK: 5);
 // 三个字段的搜索结果互相独立（不同向量空间）
 ```
 
-### 9.4 查看向量字段信息
+### 10.4 查看向量字段信息
 
 ```csharp
 foreach (var (name, dimensions) in db.Items.VectorFields)
@@ -1765,7 +1881,7 @@ foreach (var (name, dimensions) in db.Items.VectorFields)
 // 字段: AudioEmbedding, 维度: 256
 ```
 
-### 9.5 可空向量字段（Optional）
+### 10.5 可空向量字段（Optional）
 
 通过 `Optional = true` 标记允许向量字段为 `null`。适用于并非所有实体都具有某个特征的场景——例如图片集合中只有部分图片包含人脸。
 
@@ -1836,9 +1952,9 @@ var faceResults = db.Images.Search(e => e.FaceEmbedding, faceQuery, topK: 10);
 
 ---
 
-## 10. 线程安全与并发
+## 11. 线程安全与并发
 
-### 10.1 锁模型
+### 11.1 锁模型
 
 `QuiverSet<TEntity>` 内部使用 `ReaderWriterLockSlim` 实现读写分离：
 
@@ -1866,7 +1982,7 @@ flowchart LR
     A & AR & U & R & CL & LE -->|"互斥执行 🔒"| WLock["EnterWriteLock"]
 ```
 
-### 10.2 并发安全示例
+### 11.2 并发安全示例
 
 ```csharp
 var db = new MyDocumentDb();
@@ -1896,11 +2012,11 @@ var readerTask = Task.Run(() =>
 await Task.WhenAll(writerTask, readerTask);
 ```
 
-### 10.3 Dispose 线程安全
+### 11.3 Dispose 线程安全
 
 `QuiverSet` 使用 `Interlocked.Exchange(ref _disposed, 1)` 保证并发 Dispose 安全。所有操作入口调用 `ThrowIfDisposed()`，使用 `Volatile.Read` 保证跨线程可见性。
 
-### 10.4 并发性能参考
+### 11.4 并发性能参考
 
 | 测试场景 | 数据量 | 配置 | 结果 |
 |---------|--------|------|------|
@@ -1910,9 +2026,9 @@ await Task.WhenAll(writerTask, readerTask);
 
 ---
 
-## 11. 生命周期管理
+## 12. 生命周期管理
 
-### 11.1 QuiverDbContext 生命周期
+### 12.1 QuiverDbContext 生命周期
 
 ```mermaid
 stateDiagram-v2
@@ -1938,7 +2054,7 @@ stateDiagram-v2
 | `Dispose()` | ❌ 不保存 | 不保存，仅释放资源 | 需要手动控制保存时机 |
 | `DisposeAsync()` | ✅ 先保存再释放 | 调用 `SaveChangesAsync()` 增量保存 | **推荐**，用于 `await using` |
 
-### 11.2 推荐用法
+### 12.2 推荐用法
 
 ```csharp
 // ✅ 推荐：await using 自动保存（全量模式）
@@ -1968,13 +2084,13 @@ finally
 }
 ```
 
-### 11.3 QuiverSet 释放
+### 12.3 QuiverSet 释放
 
 `QuiverSet` 实现 `IDisposable`，释放内部的 `ReaderWriterLockSlim`。释放后所有操作抛出 `ObjectDisposedException`。
 
 ---
 
-## 12. 配置选项
+## 13. 配置选项
 
 `QuiverDbOptions` 提供以下配置：
 
@@ -2024,9 +2140,9 @@ var options = new QuiverDbOptions
 
 ---
 
-## 13. 内部实现细节
+## 14. 内部实现细节
 
-### 13.1 表达式树编译属性访问器
+### 14.1 表达式树编译属性访问器
 
 框架使用表达式树为每个主键和向量属性编译高性能访问器，替代运行时反射调用：
 
@@ -2046,7 +2162,7 @@ private static Func<TEntity, TResult> CompileGetter<TResult>(PropertyInfo prop)
 }
 ```
 
-### 13.2 SimilarityFunc 委托设计
+### 14.2 SimilarityFunc 委托设计
 
 使用 `ReadOnlySpan<float>` 参数类型的委托，可直接绑定 `TensorPrimitives` 方法组，无需额外 lambda 包装：
 
@@ -2062,7 +2178,7 @@ SimilarityFunc simFunc = TensorPrimitives.CosineSimilarity;
 SimilarityFunc simFunc = (a, b) => 1f / (1f + TensorPrimitives.Distance(a, b));
 ```
 
-### 13.3 HNSW 层级随机生成
+### 14.3 HNSW 层级随机生成
 
 层级服从指数衰减分布，保证高层稀疏、低层稠密：
 
@@ -2073,7 +2189,7 @@ level = floor(-ln(uniform(0, 1)) × ml)
 
 大多数节点（~93.75% 当 M=16）只在第 0 层，少数节点存在于高层充当"高速公路"入口。
 
-### 13.4 IVF K-Means++ 初始化
+### 14.4 IVF K-Means++ 初始化
 
 比随机初始化收敛更快、聚类质量更高：
 
@@ -2082,7 +2198,7 @@ level = floor(-ln(uniform(0, 1)) × ml)
 3. 以概率正比于 D(x)² 选择下一个质心
 4. 重复直到选出 K 个质心
 
-### 13.5 KDTree 剪枝优化
+### 14.5 KDTree 剪枝优化
 
 搜索时利用切分超平面距离进行剪枝：
 
@@ -2091,7 +2207,7 @@ level = floor(-ln(uniform(0, 1)) × ml)
 - 对另一侧：仅当堆未满 **或** `|diff| < 当前搜索半径` 时才探索
 - 低维下可跳过大量子树；高维下剪枝失效
 
-### 13.6 StorageProviderFactory
+### 14.6 StorageProviderFactory
 
 简单工厂模式，在 `QuiverDbContext` 构造时调用：
 
@@ -2105,7 +2221,7 @@ internal static IStorageProvider Create(QuiverDbOptions options) => options.Stor
 };
 ```
 
-### 13.7 变更追踪与 WAL 回放
+### 14.7 变更追踪与 WAL 回放
 
 `QuiverSet<T>` 内部的 `_changeLog` 在写锁内记录每次写操作，实现增量持久化：
 
@@ -2155,7 +2271,7 @@ internal List<(byte Op, object? Key, object? Entity)> DrainChanges()
 - `ReplayRemove`：主键不存在时返回 `false`（实体可能在后续 WAL 记录中被重新添加）
 - `ReplayClear`：直接清空所有数据和索引
 
-### 13.8 原子写入（SaveAsync）
+### 14.8 原子写入（SaveAsync）
 
 `SaveAsync` 使用先写临时文件、再原子替换的策略，防止写入中途崩溃导致数据损坏：
 
@@ -2165,7 +2281,7 @@ await _storageProvider.SaveAsync(tempPath, setsData);
 File.Move(tempPath, filePath, overwrite: true); // 原子替换
 ```
 
-### 13.9 WAL CRC32 校验
+### 14.9 WAL CRC32 校验
 
 每条 WAL 记录的数据区（SeqNo 到 PayloadJson）通过 `System.IO.Hashing.Crc32` 计算校验和，附加在记录末尾：
 
@@ -2181,9 +2297,9 @@ _writer.Write(crc);
 
 ---
 
-## 14. 完整示例
+## 15. 完整示例
 
-### 14.1 人脸识别系统
+### 15.1 人脸识别系统
 
 ```csharp
 using Vorcyc.Quiver;
@@ -2242,7 +2358,7 @@ else
 }
 ```
 
-### 14.2 多模态搜索引擎（HNSW 索引）
+### 15.2 多模态搜索引擎（HNSW 索引）
 
 ```csharp
 using Vorcyc.Quiver;
@@ -2307,7 +2423,7 @@ var filtered = db.Items.Search(
     overFetchMultiplier: 8);
 ```
 
-### 14.3 使用主构造函数简化上下文
+### 15.3 使用主构造函数简化上下文
 
 ```csharp
 public class MyFaceDb(string path, StorageFormat format)
@@ -2326,7 +2442,7 @@ var jsonDb = new MyFaceDb("data.json", StorageFormat.Json);
 var binaryDb = new MyFaceDb("data.vdb", StorageFormat.Binary);
 ```
 
-### 14.4 WAL 增量持久化服务
+### 15.4 WAL 增量持久化服务
 
 ```csharp
 using Vorcyc.Quiver;
@@ -2382,7 +2498,7 @@ await db.CompactAsync(); // 全量快照 + 清空 WAL
 // 作用域结束 → DisposeAsync → SaveChangesAsync（自动保存未持久化的变更）
 ```
 
-### 14.5 异步并发搜索服务
+### 15.5 异步并发搜索服务
 
 ```csharp
 public class SearchService
@@ -2420,7 +2536,7 @@ public class SearchService
 
 ---
 
-## 15. API 参考速查表
+## 16. API 参考速查表
 
 ### QuiverDbContext
 

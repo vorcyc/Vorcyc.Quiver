@@ -35,10 +35,17 @@ internal interface IStorageProvider
     /// 类型名称到 CLR <see cref="Type"/> 的映射字典。
     /// <para>文件中存在但字典中缺失的类型将被跳过，确保前向兼容。</para>
     /// </param>
+    /// <param name="migrationRules">
+    /// 可选的 Schema 迁移规则字典。键为类型全名，值为对应的迁移规则。
+    /// <para>包含属性重命名映射，供加载时将旧属性名映射到新属性名。</para>
+    /// </param>
     /// <returns>
     /// 加载后的向量集合字典。键为类型名称，值为反序列化后的实体对象列表。
     /// </returns>
-    Task<Dictionary<string, List<object>>> LoadAsync(string filePath, IReadOnlyDictionary<string, Type> typeMap);
+    Task<Dictionary<string, List<object>>> LoadAsync(
+        string filePath,
+        IReadOnlyDictionary<string, Type> typeMap,
+        IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null);
 }
 
 /// <summary>

@@ -236,7 +236,7 @@ internal class BinaryStorageProvider : IStorageProvider
     /// 加载流程：
     /// <list type="number">
     ///   <item>校验魔术字节，确保文件格式正确。</item>
-    ///   <item>读取属性描述符，与当前 CLR 类型的属性进行匹配。</item>
+    ///   <item>读取属性描述符，与当前 CLR 类型的属性进行匹配（支持通过迁移规则重命名映射）。</item>
     ///   <item>逐实体反序列化属性值；遇到已删除或未知属性时跳过对应字节（前向兼容）。</item>
     /// </list>
     /// </para>
@@ -246,9 +246,16 @@ internal class BinaryStorageProvider : IStorageProvider
     /// 类型名称到 CLR <see cref="Type"/> 的映射字典。
     /// 文件中存在但字典中缺失的类型将被跳过。
     /// </param>
+    /// <param name="migrationRules">
+    /// 可选的 Schema 迁移规则字典。键为类型全名，值为迁移规则。
+    /// 包含属性重命名映射，加载时将文件中的旧属性名映射到当前 CLR 类型的新属性名。
+    /// </param>
     /// <returns>加载后的向量集合字典，键为类型名称，值为实体对象列表。</returns>
     /// <exception cref="InvalidDataException">当文件魔术字节不匹配时抛出。</exception>
-    public async Task<Dictionary<string, List<object>>> LoadAsync(string filePath, IReadOnlyDictionary<string, Type> typeMap)
+    public async Task<Dictionary<string, List<object>>> LoadAsync(
+        string filePath,
+        IReadOnlyDictionary<string, Type> typeMap,
+        IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null)
     {
         var result = new Dictionary<string, List<object>>();
 
@@ -277,9 +284,22 @@ internal class BinaryStorageProvider : IStorageProvider
 
                 // 尝试将文件中的类型名匹配到当前程序的 CLR 类型
                 var hasType = typeMap.TryGetValue(typeName, out var type);
+
+                // 获取当前类型的迁移规则（如果有）
+                SchemaMigrationRule? rule = null;
+                if (hasType && migrationRules != null)
+                    migrationRules.TryGetValue(typeName, out rule);
+
                 // 建立描述符索引到 PropertyInfo 的映射，用于反射赋值
+                // 如果存在重命名规则，先将文件中的旧属性名映射到新属性名
                 var propMap = hasType
-                    ? descriptors.Select(d => type!.GetProperty(d.Name)).ToArray()
+                    ? descriptors.Select(d =>
+                    {
+                        var name = d.Name;
+                        if (rule?.PropertyRenames.TryGetValue(name, out var newName) == true)
+                            name = newName;
+                        return type!.GetProperty(name);
+                    }).ToArray()
                     : null;
 
                 var entityCount = br.ReadInt32();
@@ -297,7 +317,14 @@ internal class BinaryStorageProvider : IStorageProvider
                         {
                             // 正常读取并赋值
                             var value = ReadValue(br, descriptors[p].Code);
-                            if (value != null) prop.SetValue(entity, value);
+                            if (value != null)
+                            {
+                                // 文件中的类型与当前属性类型不一致时，尝试自动强转（隐式迁移）
+                                if (value.GetType() != prop.PropertyType)
+                                    value = CoerceValue(value, prop.PropertyType);
+                                if (value != null)
+                                    prop.SetValue(entity, value);
+                            }
                         }
                         else
                         {
@@ -468,6 +495,72 @@ internal class BinaryStorageProvider : IStorageProvider
         var doubles = new double[len];
         MemoryMarshal.Cast<byte, double>(bytes).CopyTo(doubles);
         return doubles;
+    }
+
+    #endregion
+
+    #region 类型强转
+
+    /// <summary>
+    /// 将从文件中读取的值自动强转为当前属性所需的目标类型。
+    /// <para>
+    /// 当实体类的属性类型发生变更（如 <c>int → long</c>、<c>float → double</c>）后，
+    /// 旧文件中存储的值类型与当前属性类型不一致。此方法尝试进行安全的隐式转换，
+    /// 覆盖以下场景：
+    /// <list type="bullet">
+    ///   <item>数值类型之间的拓宽转换（byte→short→int→long→float→double→decimal）</item>
+    ///   <item><see cref="Half"/> 与 float/double 之间的互转</item>
+    ///   <item><see cref="DateTime"/> → <see cref="DateTimeOffset"/> 的升级</item>
+    ///   <item><c>float[]</c> ↔ <c>double[]</c> 向量数组的元素级转换</item>
+    /// </list>
+    /// 不可转换时返回 <see langword="null"/>，调用方将跳过赋值（属性保留默认值）。
+    /// </para>
+    /// </summary>
+    /// <param name="value">从文件中读取的原始值（非 null）。</param>
+    /// <param name="targetType">当前 CLR 属性的目标类型。</param>
+    /// <returns>转换后的值；无法转换时返回 <see langword="null"/>。</returns>
+    private static object? CoerceValue(object value, Type targetType)
+    {
+        // ── Half 特殊处理（Convert.ChangeType 不支持 Half） ──
+        if (value is Half h)
+        {
+            if (targetType == typeof(float)) return (float)h;
+            if (targetType == typeof(double)) return (double)h;
+            return null;
+        }
+        if (targetType == typeof(Half))
+        {
+            if (value is float f) return (Half)f;
+            if (value is double d) return (Half)d;
+            return null;
+        }
+
+        // ── DateTime → DateTimeOffset 升级 ──
+        if (value is DateTime dt && targetType == typeof(DateTimeOffset))
+            return new DateTimeOffset(dt);
+
+        // ── TimeSpan → long (Ticks) 或反向 ──
+        if (value is TimeSpan ts && targetType == typeof(long))
+            return ts.Ticks;
+        if (value is long ticks && targetType == typeof(TimeSpan))
+            return TimeSpan.FromTicks(ticks);
+
+        // ── float[] ↔ double[] 向量数组互转 ──
+        if (value is float[] fa && targetType == typeof(double[]))
+            return Array.ConvertAll(fa, x => (double)x);
+        if (value is double[] da && targetType == typeof(float[]))
+            return Array.ConvertAll(da, x => (float)x);
+
+        // ── 通用数值拓宽（int→long, float→double, byte→int 等） ──
+        try
+        {
+            return Convert.ChangeType(value, targetType);
+        }
+        catch
+        {
+            // 类型完全不兼容，放弃转换
+            return null;
+        }
     }
 
     #endregion

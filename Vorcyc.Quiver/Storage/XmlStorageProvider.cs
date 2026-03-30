@@ -89,6 +89,7 @@ internal class XmlStorageProvider : IStorageProvider
     /// <list type="number">
     ///   <item>异步读取并解析 XML 文档。</item>
     ///   <item>遍历每个 <c>&lt;Set&gt;</c> 元素，通过 <paramref name="typeMap"/> 匹配 CLR 类型。</item>
+    ///   <item>若存在迁移规则，在查找属性元素时同时检查旧属性名（反向重命名映射）。</item>
     ///   <item>逐实体反序列化属性值；缺失的属性保持默认值，未匹配的类型被跳过（前向兼容）。</item>
     /// </list>
     /// </para>
@@ -98,8 +99,15 @@ internal class XmlStorageProvider : IStorageProvider
     /// 类型名称到 CLR <see cref="Type"/> 的映射字典。
     /// <para>文件中存在但字典中缺失的类型将被跳过，确保前向兼容。</para>
     /// </param>
+    /// <param name="migrationRules">
+    /// 可选的 Schema 迁移规则字典。键为类型全名，值为迁移规则。
+    /// 包含属性重命名映射，加载时将 XML 中的旧元素名映射到当前属性。
+    /// </param>
     /// <returns>加载后的向量集合字典。键为类型名称，值为反序列化后的实体对象列表。</returns>
-    public async Task<Dictionary<string, List<object>>> LoadAsync(string filePath, IReadOnlyDictionary<string, Type> typeMap)
+    public async Task<Dictionary<string, List<object>>> LoadAsync(
+        string filePath,
+        IReadOnlyDictionary<string, Type> typeMap,
+        IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null)
     {
         var result = new Dictionary<string, List<object>>();
 
@@ -114,6 +122,11 @@ internal class XmlStorageProvider : IStorageProvider
             var typeName = setEl.Attribute("type")!.Value;
             if (!typeMap.TryGetValue(typeName, out var type)) continue;
 
+            // 获取当前类型的迁移规则（如果有）
+            SchemaMigrationRule? rule = null;
+            if (migrationRules != null)
+                migrationRules.TryGetValue(typeName, out rule);
+
             var props = GetSortedProperties(type);
             var entities = new List<object>();
 
@@ -124,6 +137,11 @@ internal class XmlStorageProvider : IStorageProvider
                 foreach (var prop in props)
                 {
                     var propEl = entityEl.Element(prop.Name);
+
+                    // 当前属性名未找到元素时，尝试通过反向重命名映射查找旧属性名的元素
+                    if (propEl == null && rule?.ReverseRenames.TryGetValue(prop.Name, out var oldName) == true)
+                        propEl = entityEl.Element(oldName);
+
                     // 跳过缺失的属性或标记为 null 的属性
                     if (propEl == null || propEl.Attribute("null") != null) continue;
                     prop.SetValue(entity, XmlToValue(propEl, prop.PropertyType));

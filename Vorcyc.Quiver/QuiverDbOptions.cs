@@ -61,6 +61,20 @@ public class QuiverDbOptions
     public StorageFormat StorageFormat { get; set; } = StorageFormat.Json;
 
     /// <summary>
+    /// 向量索引的运行时内存管理模式。
+    /// <para>
+    /// <list type="bullet">
+    ///   <item><see cref="MemoryMode.FullMemory"/>（默认）：向量以 <c>float[]</c> 驻留在 GC 托管堆，搜索延迟最低。</item>
+    ///   <item><see cref="MemoryMode.MemoryMapped"/>：向量存储在 OS 管理的内存映射区域，零 GC 压力，
+    ///   物理内存按需换入，可处理超出物理内存的数据集。
+    ///   要求设置 <see cref="DatabasePath"/>。</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    /// <value>默认为 <see cref="MemoryMode.FullMemory"/>。</value>
+    public MemoryMode MemoryMode { get; set; } = MemoryMode.FullMemory;
+
+    /// <summary>
     /// 当 <see cref="StorageFormat"/> 为 <see cref="StorageFormat.Json"/> 时使用的序列化选项。
     /// <para>
     /// 默认启用缩进输出（<see cref="JsonSerializerOptions.WriteIndented"/> = <see langword="true"/>）
@@ -113,4 +127,18 @@ public class QuiverDbOptions
     /// </summary>
     /// <value>默认为 <see langword="true"/>（最强持久性）。</value>
     public bool WalFlushToDisk { get; set; } = true;
+
+    /// <summary>
+    /// 验证选项组合的合法性。在 <see cref="QuiverDbContext"/> 构造时调用。
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="MemoryMode"/> 为 <see cref="MemoryMode.MemoryMapped"/> 但未设置 <see cref="DatabasePath"/> 时抛出。
+    /// </exception>
+    internal void Validate()
+    {
+        if (MemoryMode == MemoryMode.MemoryMapped && string.IsNullOrEmpty(DatabasePath))
+            throw new InvalidOperationException(
+                $"{nameof(MemoryMode)}.{nameof(MemoryMode.MemoryMapped)} requires a valid {nameof(DatabasePath)} " +
+                $"for the vector arena file.");
+    }
 }

@@ -1,4 +1,5 @@
 ﻿using System.Numerics.Tensors;
+using Vorcyc.Quiver.Similarity;
 
 namespace Vorcyc.Quiver.Indexing;
 
@@ -29,14 +30,15 @@ namespace Vorcyc.Quiver.Indexing;
 /// 当数据量增长超过上次构建时的 <see cref="RebuildRatio"/> 倍（1.5x）时自动标记需要重建。
 /// </para>
 /// </summary>
-internal sealed class IvfIndex : IVectorIndex
+internal sealed class IvfIndex<TSim> : IVectorIndex
+    where TSim : struct, ISimilarity<float>
 {
     // ──────────────────────────────────────────────────────────────
     // 算法参数
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>相似度计算函数，由外部注入。</summary>
-    private readonly SimilarityFunc _similarityFunc;
+    /// <summary>向量数据存储，由外部注入。</summary>
+    private readonly IVectorStore _vectorStore;
 
     /// <summary>
     /// 搜索时探测的聚类数量。值越大召回率越高，但搜索越慢。
@@ -51,13 +53,11 @@ internal sealed class IvfIndex : IVectorIndex
     private int _numClusters;
 
     // ──────────────────────────────────────────────────────────────
-    // 数据存储
+    // ID 跟踪
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// 内部 ID → 向量数据的完整映射。IVF 索引需要保留原始向量用于搜索阶段的精确相似度计算。
-    /// </summary>
-    private readonly Dictionary<int, float[]> _vectors = [];
+    /// <summary>索引中已注册的内部 ID 集合。向量数据由 <see cref="_vectorStore"/> 管理。</summary>
+    private readonly HashSet<int> _ids = [];
 
     // ──────────────────────────────────────────────────────────────
     // 聚类结构（由 Build() 构建）
@@ -94,7 +94,7 @@ internal sealed class IvfIndex : IVectorIndex
     /// <summary>
     /// 创建 IVF 索引实例。
     /// </summary>
-    /// <param name="similarityFunc">相似度计算函数。</param>
+    /// <param name="vectorStore">向量数据存储。</param>
     /// <param name="numClusters">
     /// 聚类数量。为 0 时自动取 <c>√n</c>（n 为首次构建时的向量数量）。
     /// 数据量大时建议显式指定。
@@ -102,43 +102,38 @@ internal sealed class IvfIndex : IVectorIndex
     /// <param name="numProbes">
     /// 搜索时探测的聚类数量。默认 10。增大可提高召回率，减小可提高速度。
     /// </param>
-    public IvfIndex(SimilarityFunc similarityFunc, int numClusters = 0, int numProbes = 10)
+    public IvfIndex(IVectorStore vectorStore, int numClusters = 0, int numProbes = 10)
     {
-        _similarityFunc = similarityFunc;
+        _vectorStore = vectorStore;
         _numClusters = numClusters;
         _numProbes = numProbes;
     }
 
     /// <inheritdoc />
-    public int Count => _vectors.Count;
+    public int Count => _ids.Count;
 
     /// <summary>
-    /// 向索引中添加向量。新增后检查是否需要标记重建
+    /// 将指定 ID 注册到索引。新增后检查是否需要标记重建
     /// （当数据量超过上次构建时的 <see cref="RebuildRatio"/> 倍时触发）。
-    /// <para>
-    /// 注意：新增的向量不会立即加入聚类结构，而是在下次搜索时通过重建纳入。
-    /// 但向量数据本身已存入 <see cref="_vectors"/>，不会丢失。
-    /// </para>
     /// </summary>
-    /// <param name="id">内部 ID。</param>
-    /// <param name="vector">向量数据。</param>
-    public void Add(int id, float[] vector)
+    /// <param name="id">内部 ID，向量已存入 <see cref="IVectorStore"/>。</param>
+    public void Add(int id)
     {
-        _vectors[id] = vector;
+        _ids.Add(id);
 
         // 数据量增长超过阈值时，标记需要重建聚类
-        if (_isBuilt && _vectors.Count > _lastBuildCount * RebuildRatio)
+        if (_isBuilt && _ids.Count > _lastBuildCount * RebuildRatio)
             _isBuilt = false;
     }
 
     /// <inheritdoc />
-    public void Remove(int id) => _vectors.Remove(id);
+    public void Remove(int id) => _ids.Remove(id);
 
     /// <inheritdoc />
-    /// <remarks>清空向量数据、聚类质心和倒排列表，重置构建标志。</remarks>
+    /// <remarks>清空 ID 集合、聚类质心和倒排列表，重置构建标志。</remarks>
     public void Clear()
     {
-        _vectors.Clear();
+        _ids.Clear();
         _centroids = [];
         _invertedLists = [];
         _isBuilt = false;
@@ -158,7 +153,7 @@ internal sealed class IvfIndex : IVectorIndex
     /// <returns>按相似度降序排列的 (内部ID, 相似度) 列表。</returns>
     public List<(int Id, float Similarity)> Search(float[] query, int topK)
     {
-        if (_vectors.Count == 0) return [];
+        if (_ids.Count == 0) return [];
 
         // 确保聚类索引已构建（惰性构建 / 数据增长后自动重建）
         EnsureBuilt();
@@ -166,7 +161,7 @@ internal sealed class IvfIndex : IVectorIndex
         // 步骤 1：计算查询向量与所有聚类质心的相似度
         var clusterSims = new (int Index, float Similarity)[_centroids.Length];
         for (int i = 0; i < _centroids.Length; i++)
-            clusterSims[i] = (i, _similarityFunc(query, _centroids[i]));
+            clusterSims[i] = (i, TSim.Compute(query, _centroids[i]));
 
         // 步骤 2：选取最相似的 nProbe 个聚类进行探测
         var probeClusters = clusterSims
@@ -180,8 +175,8 @@ internal sealed class IvfIndex : IVectorIndex
             foreach (var id in _invertedLists[clusterIdx])
             {
                 // 跳过已被删除但倒排列表中可能残留的无效 ID
-                if (!_vectors.TryGetValue(id, out var vector)) continue;
-                results.Add((id, _similarityFunc(query, vector)));
+                if (!_vectorStore.Contains(id)) continue;
+                results.Add((id, TSim.Compute(query, _vectorStore.Get(id))));
             }
         }
 
@@ -198,7 +193,7 @@ internal sealed class IvfIndex : IVectorIndex
     /// <returns>满足阈值条件的 (内部ID, 相似度) 列表，无特定排序。</returns>
     public List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold)
     {
-        if (_vectors.Count == 0) return [];
+        if (_ids.Count == 0) return [];
         EnsureBuilt();
 
         var results = new List<(int Id, float Similarity)>();
@@ -209,7 +204,7 @@ internal sealed class IvfIndex : IVectorIndex
         // 计算查询向量与所有质心的相似度
         var clusterSims = new (int Index, float Similarity)[_centroids.Length];
         for (int i = 0; i < _centroids.Length; i++)
-            clusterSims[i] = (i, _similarityFunc(query, _centroids[i]));
+            clusterSims[i] = (i, TSim.Compute(query, _centroids[i]));
 
         // 探测最近的聚类，仅收集超过阈值的结果
         foreach (var (clusterIdx, _) in clusterSims
@@ -217,8 +212,8 @@ internal sealed class IvfIndex : IVectorIndex
         {
             foreach (var id in _invertedLists[clusterIdx])
             {
-                if (!_vectors.TryGetValue(id, out var vector)) continue;
-                var sim = _similarityFunc(query, vector);
+                if (!_vectorStore.Contains(id)) continue;
+                var sim = TSim.Compute(query, _vectorStore.Get(id));
                 if (sim >= threshold) results.Add((id, sim));
             }
         }
@@ -251,18 +246,18 @@ internal sealed class IvfIndex : IVectorIndex
     /// </summary>
     private void Build()
     {
-        if (_vectors.Count == 0) return;
+        if (_ids.Count == 0) return;
 
         // ── 步骤 1：确定聚类数 K ──
         // 未显式指定（为 0）时自动取 √n，在搜索速度和聚类粒度间取平衡
         var k = _numClusters > 0
             ? _numClusters
-            : Math.Max(1, (int)Math.Sqrt(_vectors.Count));
+            : Math.Max(1, (int)Math.Sqrt(_ids.Count));
         _numClusters = k;
 
-        // 提取所有 ID 和向量，保持对应关系
-        var allIds = _vectors.Keys.ToList();
-        var allVectors = allIds.Select(id => _vectors[id]).ToList();
+        // 提取所有 ID 和向量（从 store 读取并物化为数组，供 K-Means 迭代使用）
+        var allIds = _ids.ToList();
+        var allVectors = allIds.Select(id => _vectorStore.Get(id).ToArray()).ToList();
         var dim = allVectors[0].Length;
 
         // ── 步骤 2：K-Means++ 质心初始化 ──
@@ -322,7 +317,7 @@ internal sealed class IvfIndex : IVectorIndex
             _invertedLists[assignments[i]].Add(allIds[i]);
 
         _isBuilt = true;
-        _lastBuildCount = _vectors.Count; // 记录本次构建时的数据量，用于判断是否需要重建
+        _lastBuildCount = _ids.Count; // 记录本次构建时的数据量，用于判断是否需要重建
     }
 
     /// <summary>
@@ -337,7 +332,7 @@ internal sealed class IvfIndex : IVectorIndex
         float bestSim = float.MinValue;
         for (int i = 0; i < _centroids.Length; i++)
         {
-            var sim = _similarityFunc(vector, _centroids[i]);
+            var sim = TSim.Compute(vector, _centroids[i]);
             if (sim > bestSim) { bestSim = sim; best = i; }
         }
         return best;

@@ -8,6 +8,8 @@ await CrudTests.RunAsync();
 await ConcurrencyTests.RunAsync();
 await StorageTests.RunAsync();
 await WalTests.RunAsync();
+await MemoryModeTests.RunAsync();
+await SimilarityTests.RunAsync();
 
 TestHelper.PrintSummary();
 

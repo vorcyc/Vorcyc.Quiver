@@ -1,13 +1,13 @@
-﻿# Vorcyc Quiver 1.2.2 Technical Documentation
+﻿# Vorcyc Quiver 2.0.0 Technical Documentation
 
-![Vorcyc Quiver 1.2.2](logo.jpg "Vorcyc Quiver 1.2.2")
+![Vorcyc Quiver 2.0.0](logo.jpg "Vorcyc Quiver 2.0.0")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
 > **Namespace**: `Vorcyc.Quiver`  
 > **Design Philosophy**: Similar to EF Core's `DbContext` pattern, achieving automatic discovery, index construction, and persistence of the vector database through declarative attribute annotations  
-> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · Multiple persistence formats (JSON / XML / Binary) · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation  
-> **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery` `Schema Migration`  
+> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · 9 built-in distance metrics + custom similarity support · Multiple persistence formats (JSON / XML / Binary) · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation · Memory-mapped vector storage  
+> **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery` `Schema Migration` `ISimilarity` `Custom Metric` `Memory-Mapped` `MemoryMappedFile`  
 > **Name Origin**: Quiver — a container for arrows (Arrow), and the mathematical essence of a vector is an arrow
 
 ### Creation Overview
@@ -25,6 +25,35 @@ Therefore, I decided to design a brand-new vector database framework that would 
 
 ---
 
+### What's New in 2.0.0
+
+> **File Format Compatibility**: v2.0.0 is fully backward-compatible with v1.x data files. All three storage formats (JSON / XML / Binary) and WAL files can be loaded without any migration.
+
+#### Breaking Changes
+
+| Change | Before (v1.x) | After (v2.0.0) |
+|--------|---------------|----------------|
+| Similarity computation | `SimilarityFunc` delegate | `ISimilarity<T>` static abstract interface — JIT generates specialized machine code per type, zero virtual dispatch |
+| Vector data ownership | Each index stores vectors internally | `IVectorStore` abstraction — indexes only manage topology (graph/tree/inverted list), vectors unified by store |
+
+#### New Features
+
+| Feature | Description |
+|---------|-------------|
+| **6 new distance metrics** | Manhattan (L1), Chebyshev (L∞), Pearson correlation, Hamming, Jaccard, Canberra — total 9 built-in metrics |
+| **Custom similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySimilarity))]` — plug in any `ISimilarity<float>` struct |
+| **Memory-mapped vector storage** | `MemoryMode.MemoryMapped` — vectors in OS-managed mmap arena, zero GC pressure, handles datasets exceeding physical memory |
+| **IVectorStore abstraction** | `HeapVectorStore` (GC heap, default) and `MmapVectorStore` (mmap file) — pluggable vector storage backends |
+
+#### Performance Improvements
+
+| Improvement | Details |
+|-------------|--------|
+| **SIMD for all metrics** | All 9 similarity implementations use `Vector<float>` / `TensorPrimitives` SIMD intrinsics, auto-adapting to SSE4 / AVX2 / AVX-512 register width |
+| **Zero-overhead dispatch** | `ISimilarity<T>` with `static abstract` + `readonly struct` enables JIT to inline `TSim.Compute()` at call sites — no delegate indirection |
+
+---
+
 ### Product Introduction
 
 **Quiver** is a pure .NET embedded vector database with zero native dependencies, running as an in-process library without requiring standalone database server deployment. It draws on EF Core's `DbContext` design pattern, allowing developers to define entities and indexing strategies through declarative attributes such as `[QuiverKey]`, `[QuiverVector]`, and `[QuiverIndex]`, with the framework automatically completing model discovery, index construction, and persistence management at runtime.
@@ -35,7 +64,9 @@ Therefore, I decided to design a brand-new vector database framework that would 
 - **Multiple ANN Index Algorithms** — Built-in Flat (brute-force search), HNSW (Hierarchical Navigable Small World graph), IVF (Inverted File Index), and KDTree indexes, covering the full range from small-scale exact search to million-scale approximate search.
 - **Flexible Persistence Options** — Supports JSON (human-readable for debugging), XML (compatibility), and Binary (high-performance production) storage formats, plus a WAL (Write-Ahead Log) incremental persistence mechanism that reduces persistence complexity from O(N) to O(delta) in high-frequency write scenarios.
 - **Out-of-the-box Concurrency Safety** — `QuiverSet<T>` internally implements reader-writer separation locks via `ReaderWriterLockSlim`, making concurrent multi-threaded searching and writing inherently safe without external locking.
-- **SIMD Hardware Acceleration** — Leverages `TensorPrimitives`-based SIMD instructions to accelerate vector similarity computation and L2 normalization, fully utilizing modern CPU vectorization capabilities.
+- **9 Distance Metrics + Custom Similarity** — Built-in Cosine, Euclidean, DotProduct, Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra. Also supports user-defined `ISimilarity<float>` implementations via `CustomSimilarity` attribute.
+- **SIMD Hardware Acceleration** — All similarity implementations leverage `TensorPrimitives` and `Vector<float>` SIMD instructions, auto-adapting to SSE4 / AVX2 / AVX-512 register widths.
+- **Memory-Mapped Vector Storage** — Optional `MemoryMode.MemoryMapped` stores vectors in OS-managed arena files, zero GC pressure, enabling datasets exceeding physical memory.
 - **Schema Migration** — Supports property renaming and value transformation during loading via `ConfigureMigration<T>()`. Adding or removing fields requires no configuration — new fields get default values, removed fields are silently skipped.
 
 **Typical Use Cases**: Semantic search, RAG (Retrieval-Augmented Generation), face recognition, image-to-image search, recommendation systems, multimodal retrieval, etc.
@@ -153,6 +184,10 @@ graph TB
 | `WalOperation` | `internal enum` | WAL operation types: Add / Remove / Clear |
 | `MigrationBuilder<T>` | `class` | Fluent API builder for Schema migration rules (property rename + value transform) |
 | `SchemaMigrationRule` | `internal class` | Stores migration rules for a single entity type: property rename map + value transform functions |
+| `ISimilarity<T>` | `public interface` | Static abstract similarity computation contract. JIT-inlined per concrete type, zero virtual dispatch |
+| `IVectorStore` | `internal interface` | Vector data storage abstraction. Decouples vector ownership from index topology |
+| `HeapVectorStore` | `internal sealed class` | GC heap vector store (`Dictionary<int, float[]>`), default mode |
+| `MmapVectorStore` | `internal sealed class` | Memory-mapped vector store (`MemoryMappedFile` arena), zero GC pressure |
 
 ### 1.3 Class Relationship Diagram
 
@@ -267,6 +302,7 @@ classDiagram
         +string? DatabasePath
         +DistanceMetric DefaultMetric
         +StorageFormat StorageFormat
+        +MemoryMode MemoryMode
         +JsonSerializerOptions JsonOptions
         +bool EnableWal
         +int WalCompactionThreshold
@@ -714,13 +750,19 @@ flowchart TD
 
 ## 4. Distance Metrics
 
-The `DistanceMetric` enum defines three vector similarity computation methods:
+The `DistanceMetric` enum defines nine vector similarity computation methods:
 
 | Metric Type | Mathematical Formula | Range | Use Case | Pre-normalization |
 |------------|---------------------|-------|----------|-------------------|
 | `Cosine` | $\cos(\theta) = \frac{a \cdot b}{\|a\| \times \|b\|}$ | [-1, 1] | Text embeddings, semantic search | ✅ Automatically enabled |
 | `Euclidean` | $\frac{1}{1 + \|a - b\|_2}$ | (0, 1] | Spatial coordinates, physical distances | ❌ |
 | `DotProduct` | $a \cdot b = \sum_i a_i b_i$ | $(-\infty, +\infty)$ | Pre-normalized vectors, MIPS | ❌ |
+| `Manhattan` | $\frac{1}{1 + \sum|a_i - b_i|}$ | (0, 1] | Sparse features, recommendation systems | ❌ |
+| `Chebyshev` | $\frac{1}{1 + \max|a_i - b_i|}$ | (0, 1] | Feature deviation detection, grid distances | ❌ |
+| `Pearson` | $\frac{\sum(a_i-\bar{a})(b_i-\bar{b})}{\sqrt{\sum(a_i-\bar{a})^2 \sum(b_i-\bar{b})^2}}$ | [-1, 1] | Text embeddings (de-biased), TF-IDF, rating vectors | ❌ |
+| `Hamming` | $1 - \frac{\text{mismatch}}{n}$ | [0, 1] | Binary hash codes, LSH, SimHash/MinHash fingerprints | ❌ |
+| `Jaccard` | $\frac{\sum\min(a_i,b_i)}{\sum\max(a_i,b_i)}$ | [0, 1] | BoW/TF-IDF sparse features, histogram comparison | ❌ |
+| `Canberra` | $1 - \frac{1}{n}\sum\frac{|a_i-b_i|}{|a_i|+|b_i|}$ | [0, 1] | Sparse data (weight-sensitive), chemical fingerprints | ❌ |
 
 ### 4.1 Cosine Pre-normalization Optimization Principle
 
@@ -776,18 +818,66 @@ public float[] Position { get; set; } = [];
 // DotProduct — vectors already pre-normalized or needing Maximum Inner Product Search (MIPS)
 [QuiverVector(128, DistanceMetric.DotProduct)]
 public float[] Feature { get; set; } = [];
+
+// Manhattan — sparse features, recommendation systems
+[QuiverVector(256, DistanceMetric.Manhattan)]
+public float[] SparseFeature { get; set; } = [];
+
+// Hamming — binary hash codes, LSH fingerprints
+[QuiverVector(64, DistanceMetric.Hamming)]
+public float[] BinaryHash { get; set; } = [];
 ```
 
-### 4.3 Similarity Function Mapping
+### 4.3 Custom Similarity
 
-The framework internally creates different `SimilarityFunc` delegates (`ReadOnlySpan<float>, ReadOnlySpan<float> -> float`) based on metric type, which can directly bind to `TensorPrimitives` static method groups:
+Implement `ISimilarity<float>` to define a custom metric, then assign it via the `CustomSimilarity` property on `[QuiverVector]`. When `CustomSimilarity` is set, the `metric` parameter is ignored.
 
-| Metric | PreNormalize | Bound Function |
-|--------|-------------|----------------|
-| `Cosine` | `true` | `TensorPrimitives.Dot` |
-| `DotProduct` | `false` | `TensorPrimitives.Dot` |
-| `Euclidean` | `false` | `(a, b) => 1f / (1f + TensorPrimitives.Distance(a, b))` |
-| `Cosine` (fallback) | `false` | `TensorPrimitives.CosineSimilarity` |
+```csharp
+// 1. Define custom similarity (readonly struct + ISimilarity<float>)
+public readonly struct WeightedL1Similarity : ISimilarity<float>
+{
+    public static float Compute(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
+    {
+        float sum = 0f;
+        for (int i = 0; i < x.Length; i++)
+            sum += MathF.Abs(x[i] - y[i]) * (i < 128 ? 2f : 1f); // first 128 dims weighted 2x
+        return 1f / (1f + sum);
+    }
+}
+
+// 2. Use it on entity
+public class MyEntity
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+
+    [QuiverVector(256, CustomSimilarity = typeof(WeightedL1Similarity))]
+    public float[] Embedding { get; set; } = [];
+}
+```
+
+**Requirements**:
+- Must be a `readonly struct` implementing `ISimilarity<float>`
+- Must have a public parameterless constructor (default for structs)
+- JIT will inline `TSim.Compute()` at the call site — zero overhead vs built-in metrics
+
+### 4.4 Similarity Function Mapping
+
+The framework internally resolves each metric to an `ISimilarity<float>` implementation. All implementations use SIMD-accelerated computation:
+
+| Metric | PreNormalize | ISimilarity Type | SIMD Backend |
+|--------|-------------|------------------|--------------|
+| `Cosine` | `true` | `DotProductSimilarity` | `TensorPrimitives.Dot` |
+| `Cosine` (fallback) | `false` | `CosineSimilarity` | `TensorPrimitives.CosineSimilarity` |
+| `DotProduct` | `false` | `DotProductSimilarity` | `TensorPrimitives.Dot` |
+| `Euclidean` | `false` | `EuclideanSimilarity` | `TensorPrimitives.Distance` |
+| `Manhattan` | `false` | `ManhattanSimilarity` | `Vector<float>` abs-diff accumulation |
+| `Chebyshev` | `false` | `ChebyshevSimilarity` | `Vector<float>` abs-diff max tracking |
+| `Pearson` | `false` | `PearsonCorrelationSimilarity` | `TensorPrimitives.Sum` + `Vector<float>` centered-dot |
+| `Hamming` | `false` | `HammingSimilarity` | `Vector<float>` equality mask + ConditionalSelect |
+| `Jaccard` | `false` | `JaccardSimilarity` | `Vector<float>` Min/Max accumulation |
+| `Canberra` | `false` | `CanberraSimilarity` | `Vector<float>` weighted division |
+| (custom) | user-defined | User's `ISimilarity<float>` | User-defined |
 
 ---
 
@@ -2108,6 +2198,11 @@ var options = new QuiverDbOptions
     // Persistence storage format
     StorageFormat = StorageFormat.Json,
 
+    // Vector storage memory mode
+    // FullMemory: vectors on GC heap (lowest latency)
+    // MemoryMapped: vectors in OS mmap arena (zero GC pressure, handles datasets > physical RAM)
+    MemoryMode = MemoryMode.FullMemory,
+
     // JSON serialization options (only used when StorageFormat.Json)
     JsonOptions = new JsonSerializerOptions
     {
@@ -2134,6 +2229,7 @@ var options = new QuiverDbOptions
 | `DatabasePath` | `string?` | `null` | Storage path, `null` for in-memory mode (`SaveAsync` requires explicit `path`) |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | Default distance metric |
 | `StorageFormat` | `StorageFormat` | `Json` | Persistence format: `Json` / `Xml` / `Binary` |
+| `MemoryMode` | `MemoryMode` | `FullMemory` | Vector storage mode: `FullMemory` (GC heap) / `MemoryMapped` (mmap arena, zero GC) |
 | `JsonOptions` | `JsonSerializerOptions` | Indented + CamelCase | JSON serialization options |
 | `EnableWal` | `bool` | `false` | Whether to enable WAL incremental persistence |
 | `WalCompactionThreshold` | `int` | `10,000` | Auto-compact when WAL record count reaches this value |
@@ -2163,21 +2259,53 @@ private static Func<TEntity, TResult> CompileGetter<TResult>(PropertyInfo prop)
 }
 ```
 
-### 14.2 SimilarityFunc Delegate Design
+### 14.2 ISimilarity\<T\> Static Abstract Interface Design
 
-Uses delegates with `ReadOnlySpan<float>` parameter types that can directly bind to `TensorPrimitives` method groups without additional lambda wrapping:
+Uses C# `static abstract` interface members on `readonly struct` types. The JIT generates specialized machine code for each concrete type, enabling direct inlining at call sites with zero virtual dispatch or delegate indirection:
 
 ```csharp
-// Delegate signature
-internal delegate float SimilarityFunc(ReadOnlySpan<float> a, ReadOnlySpan<float> b);
+// Interface definition
+public interface ISimilarity<T> where T : unmanaged, INumber<T>, IRootFunctions<T>
+{
+    static abstract T Compute(ReadOnlySpan<T> x, ReadOnlySpan<T> y);
+}
 
-// Direct binding to TensorPrimitives method groups (zero overhead)
-SimilarityFunc simFunc = TensorPrimitives.Dot;
-SimilarityFunc simFunc = TensorPrimitives.CosineSimilarity;
+// Built-in implementations (readonly struct, zero-size, JIT-inlined)
+public readonly struct DotProductSimilarity : ISimilarity<float>
+{
+    public static float Compute(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
+        => TensorPrimitives.Dot(x, y);
+}
 
-// Euclidean requires transformation to similarity
-SimilarityFunc simFunc = (a, b) => 1f / (1f + TensorPrimitives.Distance(a, b));
+public readonly struct ManhattanSimilarity : ISimilarity<float>
+{
+    public static float Compute(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
+    {
+        // SIMD-accelerated via Vector<float>
+        int i = 0;
+        float sum = 0f;
+        if (Vector.IsHardwareAccelerated && x.Length >= Vector<float>.Count)
+        {
+            var vsum = Vector<float>.Zero;
+            var lastBlock = x.Length - x.Length % Vector<float>.Count;
+            for (; i < lastBlock; i += Vector<float>.Count)
+                vsum += Vector.Abs(new Vector<float>(x[i..]) - new Vector<float>(y[i..]));
+            sum = Vector.Sum(vsum);
+        }
+        for (; i < x.Length; i++)
+            sum += MathF.Abs(x[i] - y[i]);
+        return 1f / (1f + sum);
+    }
+}
 ```
+
+**Advantages over the v1 delegate approach**:
+
+| Dimension | v1 `SimilarityFunc` delegate | v2 `ISimilarity<T>` static abstract |
+|-----------|------------------------------|--------------------------------------|
+| Dispatch | Indirect call (~2ns overhead) | JIT-inlined, zero overhead |
+| Generics | `float` only | Generic over `T : INumber<T>` (float, double, Half) |
+| Extensibility | Framework-internal only | Users implement `ISimilarity<float>` + `[QuiverVector(CustomSimilarity=...)]` |
 
 ### 14.3 HNSW Level Random Generation
 
@@ -2614,6 +2742,12 @@ All synchronous search methods have corresponding `Async` suffix versions with a
 | `Cosine` | Cosine similarity (pre-normalization optimized) |
 | `Euclidean` | Euclidean distance (converted to similarity) |
 | `DotProduct` | Dot product |
+| `Manhattan` | Manhattan distance / L1 norm (converted to similarity) |
+| `Chebyshev` | Chebyshev distance / L∞ norm (converted to similarity) |
+| `Pearson` | Pearson correlation coefficient (de-meaned cosine) |
+| `Hamming` | Hamming similarity (match ratio) |
+| `Jaccard` | Generalized Jaccard similarity (Σmin/Σmax) |
+| `Canberra` | Canberra distance (converted to similarity) |
 
 #### VectorIndexType
 

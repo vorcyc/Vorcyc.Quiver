@@ -100,6 +100,8 @@ public partial class QuiverSet<TEntity>
             _nextId = 0;
             foreach (var index in _indices.Values)
                 index.Clear();
+            foreach (var store in _vectorStores.Values)
+                store.Clear();
         }
         finally { _lock.ExitWriteLock(); }
     }

@@ -1,4 +1,5 @@
 using Vorcyc.Quiver;
+using Vorcyc.Quiver.Similarity;
 
 namespace AllBasicTests;
 
@@ -56,4 +57,57 @@ public class RichTypeEntity
 
     [QuiverVector(128)]
     public float[] Embedding { get; set; } = [];
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 度量测试实体
+// ══════════════════════════════════════════════════════════════════
+
+/// <summary>曼哈顿度量实体。</summary>
+public class ManhattanEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    [QuiverVector(64, DistanceMetric.Manhattan)] public float[] Vec { get; set; } = [];
+}
+
+/// <summary>切比雪夫度量实体。</summary>
+public class ChebyshevEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    [QuiverVector(64, DistanceMetric.Chebyshev)] public float[] Vec { get; set; } = [];
+}
+
+/// <summary>皮尔逊相关度量实体。</summary>
+public class PearsonEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    [QuiverVector(64, DistanceMetric.Pearson)] public float[] Vec { get; set; } = [];
+}
+
+/// <summary>汉明度量实体（二值向量）。</summary>
+public class HammingEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    [QuiverVector(64, DistanceMetric.Hamming)] public float[] Vec { get; set; } = [];
+}
+
+/// <summary>Jaccard 度量实体（非负向量）。</summary>
+public class JaccardEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    [QuiverVector(64, DistanceMetric.Jaccard)] public float[] Vec { get; set; } = [];
+}
+
+/// <summary>堪培拉度量实体。</summary>
+public class CanberraEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    [QuiverVector(64, DistanceMetric.Canberra)] public float[] Vec { get; set; } = [];
+}
+
+/// <summary>自定义度量实体（通过 CustomSimilarity 指定 ManhattanSimilarity struct）。</summary>
+public class CustomSimEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    [QuiverVector(64, CustomSimilarity = typeof(ManhattanSimilarity))] public float[] Vec { get; set; } = [];
 }

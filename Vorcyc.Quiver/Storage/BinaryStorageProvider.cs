@@ -30,9 +30,12 @@ internal class BinaryStorageProvider : IStorageProvider
 {
     /// <summary>
     /// 文件魔术字节，用于标识文件格式和版本。
-    /// <para>值为 <c>"QDB\x01"</c>（ASCII），其中 <c>\x01</c> 表示版本 1。</para>
+    /// <para>值为 <c>"QDB\x02"</c>（ASCII），其中 <c>\x02</c> 表示版本 2。</para>
     /// </summary>
-    private static readonly byte[] Magic = "QDB\x01"u8.ToArray();
+    private static readonly byte[] Magic = "QDB\x02"u8.ToArray();
+
+    /// <summary>版本 1 的魔术字节，用于向后兼容读取。</summary>
+    private static readonly byte[] MagicV1 = "QDB\x01"u8.ToArray();
 
     #region 类型码
 
@@ -265,9 +268,9 @@ internal class BinaryStorageProvider : IStorageProvider
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
             using var br = new BinaryReader(fs);
 
-            // 校验文件头魔术字节
+            // 校验文件头魔术字节（兼容 v1 和 v2）
             var magic = br.ReadBytes(4);
-            if (!magic.AsSpan().SequenceEqual(Magic))
+            if (!magic.AsSpan().SequenceEqual(Magic) && !magic.AsSpan().SequenceEqual(MagicV1))
                 throw new InvalidDataException("Invalid QuiverDb binary file.");
 
             var setCount = br.ReadInt32();

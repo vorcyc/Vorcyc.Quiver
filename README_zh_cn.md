@@ -1,13 +1,13 @@
-# Vorcyc Quiver 1.2.2 技术文档
+# Vorcyc Quiver 2.0.0 技术文档
 
-![Vorcyc Quiver 1.2.2](logo.jpg "Vorcyc Quiver 1.2.2")
+![Vorcyc Quiver 2.0.0](logo.jpg "Vorcyc Quiver 2.0.0")
 
 > **产品定位**：纯 .NET 实现的嵌入式向量数据库 —— 零原生依赖，进程内运行，无需独立部署数据库服务器  
 > **框架版本**：.NET 10  
 > **命名空间**：`Vorcyc.Quiver`  
 > **设计理念**：类似 EF Core 的 `DbContext` 模式，通过声明式属性标记实现向量数据库的自动发现、索引构建和持久化  
-> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 多种持久化格式（JSON / XML / Binary） · WAL 增量持久化 · Schema Migration（属性重命名 / 值转换） · 读写分离锁并发安全 · SIMD 加速相似度计算  
-> **关键字**：`嵌入式向量数据库` `纯 .NET` `ANN` `近似最近邻搜索` `相似度检索` `HNSW` `IVF` `KDTree` `Code-First` `EF Core 风格` `Embedding` `语义搜索` `人脸识别` `以图搜图` `RAG` `SIMD` `WAL` `Write-Ahead Log` `增量持久化` `崩溃恢复` `Schema Migration`
+> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 9 种内置距离度量 + 自定义相似度 · 多种持久化格式（JSON / XML / Binary） · WAL 增量持久化 · Schema Migration（属性重命名 / 值转换） · 读写分离锁并发安全 · SIMD 加速相似度计算 · 内存映射向量存储  
+> **关键字**：`嵌入式向量数据库` `纯 .NET` `ANN` `近似最近邻搜索` `相似度检索` `HNSW` `IVF` `KDTree` `Code-First` `EF Core 风格` `Embedding` `语义搜索` `人脸识别` `以图搜图` `RAG` `SIMD` `WAL` `Write-Ahead Log` `增量持久化` `崩溃恢复` `Schema Migration` `ISimilarity` `自定义度量` `内存映射` `MemoryMappedFile`
 > **释名**：Quiver —— 箭袋，装箭（Arrow）的容器，向量的数学本质就是箭头
 
 ### 创作梗概
@@ -25,6 +25,35 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 
 ---
 
+### 2.0.0 更新说明
+
+> **文件格式兼容性**：v2.0.0 完全向后兼容 v1.x 的数据文件。三种存储格式（JSON / XML / Binary）和 WAL 文件均可直接加载，无需任何迁移。
+
+#### 架构变更（Breaking Changes）
+
+| 变更项 | v1.x | v2.0.0 |
+|--------|------|--------|
+| 相似度计算 | `SimilarityFunc` 委托 | `ISimilarity<T>` 静态抽象接口 —— JIT 为每个具体类型生成特化机器码，零虚分派 |
+| 向量数据所有权 | 各索引内部各自存储向量 | `IVectorStore` 抽象 —— 索引仅管理拓扑结构（图/树/倒排），向量由存储层统一管理 |
+
+#### 新增功能
+
+| 功能 | 说明 |
+|------|------|
+| **6 种新距离度量** | Manhattan（L1）、Chebyshev（L∞）、Pearson 相关、Hamming、Jaccard、Canberra —— 共 9 种内置度量 |
+| **自定义相似度** | `[QuiverVector(128, CustomSimilarity = typeof(MySimilarity))]` —— 接入任意 `ISimilarity<float>` 结构体 |
+| **内存映射向量存储** | `MemoryMode.MemoryMapped` —— 向量存储在 OS 管理的 mmap 区域，零 GC 压力，可处理超出物理内存的数据集 |
+| **IVectorStore 抽象** | `HeapVectorStore`（GC 堆，默认）和 `MmapVectorStore`（mmap 文件）—— 可插拔的向量存储后端 |
+
+#### 性能优化
+
+| 优化项 | 详情 |
+|--------|------|
+| **全度量 SIMD 加速** | 全部 9 种相似度实现均使用 `Vector<float>` / `TensorPrimitives` SIMD 指令，自动适配 SSE4 / AVX2 / AVX-512 寄存器宽度 |
+| **零开销分派** | `ISimilarity<T>` 配合 `static abstract` + `readonly struct`，JIT 在调用站点直接内联 `TSim.Compute()` —— 无委托间接调用 |
+
+---
+
 ### 产品简介
 
 **Quiver** 是一款纯 .NET 实现的嵌入式向量数据库，无任何原生依赖，以进程内库的形式运行，无需独立部署数据库服务器。它借鉴 EF Core 的 `DbContext` 设计模式，让开发者通过 `[QuiverKey]`、`[QuiverVector]`、`[QuiverIndex]` 等声明式特性定义实体与索引策略，框架在运行时自动完成模型发现、索引构建和持久化管理。
@@ -35,7 +64,9 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 - **多种 ANN 索引算法** —— 内置 Flat（暴力搜索）、HNSW（分层可导航小世界图）、IVF（倒排文件索引）、KDTree（KD 树）四种索引，覆盖从小数据量精确搜索到百万级近似搜索的全场景需求。
 - **灵活的持久化方案** —— 支持 JSON（可读调试）、XML（兼容性）、Binary（高性能生产）三种存储格式，以及 WAL（Write-Ahead Log）增量持久化机制，高频写入场景下持久化复杂度从 O(N) 降至 O(Δ)。
 - **开箱即用的并发安全** —— `QuiverSet<T>` 内部通过 `ReaderWriterLockSlim` 实现读写分离锁，多线程并发搜索与写入天然安全，无需外部加锁。
-- **SIMD 硬件加速** —— 基于 `TensorPrimitives` 的 SIMD 指令加速向量相似度计算与 L2 归一化，充分利用现代 CPU 的向量化能力。
+- **9 种距离度量 + 自定义相似度** —— 内置 Cosine、Euclidean、DotProduct、Manhattan、Chebyshev、Pearson、Hamming、Jaccard、Canberra。还支持用户通过 `CustomSimilarity` 属性接入自定义 `ISimilarity<float>` 实现。
+- **SIMD 硬件加速** —— 全部相似度实现均基于 `TensorPrimitives` 和 `Vector<float>` SIMD 指令，自动适配 SSE4 / AVX2 / AVX-512 寄存器宽度。
+- **内存映射向量存储** —— 可选 `MemoryMode.MemoryMapped` 将向量存储在 OS 管理的 arena 文件中，零 GC 压力，支持超出物理内存的数据集。
 - **Schema Migration** —— 支持加载时通过 `ConfigureMigration<T>()` 声明属性重命名和值转换规则。新增/删除字段无需配置——新字段取默认值，删除字段静默跳过。
 
 **典型应用场景**：语义搜索、RAG（检索增强生成）、人脸识别、以图搜图、推荐系统、多模态检索等。
@@ -153,6 +184,10 @@ graph TB
 | `WalOperation` | `internal enum` | WAL 操作类型：Add / Remove / Clear |
 | `MigrationBuilder<T>` | `class` | Schema 迁移的流式 API 构建器（属性重命名 + 值转换） |
 | `SchemaMigrationRule` | `internal class` | 存储单个实体类型的迁移规则：属性重命名映射 + 值转换函数 |
+| `ISimilarity<T>` | `public interface` | 静态抽象相似度计算契约。JIT 为每个具体类型内联，零虚分派 |
+| `IVectorStore` | `internal interface` | 向量数据存储抽象。将向量所有权从索引拓扑中剥离 |
+| `HeapVectorStore` | `internal sealed class` | GC 堆向量存储（`Dictionary<int, float[]>`），默认模式 |
+| `MmapVectorStore` | `internal sealed class` | 内存映射向量存储（`MemoryMappedFile` arena），零 GC 压力 |
 
 ### 1.3 类关系图
 
@@ -267,6 +302,7 @@ classDiagram
         +string? DatabasePath
         +DistanceMetric DefaultMetric
         +StorageFormat StorageFormat
+        +MemoryMode MemoryMode
         +JsonSerializerOptions JsonOptions
         +bool EnableWal
         +int WalCompactionThreshold
@@ -713,13 +749,19 @@ flowchart TD
 
 ## 4. 距离度量
 
-`DistanceMetric` 枚举定义了三种向量相似度计算方式：
+`DistanceMetric` 枚举定义了九种向量相似度计算方式：
 
 | 度量类型 | 数学公式 | 值域 | 适用场景 | 预归一化 |
 |---------|----------|------|---------|---------|
 | `Cosine` | $\cos(\theta) = \frac{a \cdot b}{\|a\| \times \|b\|}$ | [-1, 1] | 文本嵌入、语义搜索 | ✅ 自动启用 |
 | `Euclidean` | $\frac{1}{1 + \|a - b\|_2}$ | (0, 1] | 空间坐标、物理距离 | ❌ |
 | `DotProduct` | $a \cdot b = \sum_i a_i b_i$ | $(-\infty, +\infty)$ | 已归一化向量、MIPS | ❌ |
+| `Manhattan` | $\frac{1}{1 + \sum|a_i - b_i|}$ | (0, 1] | 稀疏特征、推荐系统 | ❌ |
+| `Chebyshev` | $\frac{1}{1 + \max|a_i - b_i|}$ | (0, 1] | 特征偏差检测、棋盘距离 | ❌ |
+| `Pearson` | $\frac{\sum(a_i-\bar{a})(b_i-\bar{b})}{\sqrt{\sum(a_i-\bar{a})^2 \sum(b_i-\bar{b})^2}}$ | [-1, 1] | 文本嵌入（去偏置）、TF-IDF、评分向量 | ❌ |
+| `Hamming` | $1 - \frac{\text{不等元素数}}{n}$ | [0, 1] | 二值哈希码、LSH、SimHash/MinHash 指纹 | ❌ |
+| `Jaccard` | $\frac{\sum\min(a_i,b_i)}{\sum\max(a_i,b_i)}$ | [0, 1] | BoW/TF-IDF 稀疏特征、直方图比较 | ❌ |
+| `Canberra` | $1 - \frac{1}{n}\sum\frac{|a_i-b_i|}{|a_i|+|b_i|}$ | [0, 1] | 稀疏数据（权重敏感）、化学指纹 | ❌ |
 
 ### 4.1 Cosine 预归一化优化原理
 
@@ -775,18 +817,66 @@ public float[] Position { get; set; } = [];
 // DotProduct — 向量已预归一化或需要最大内积搜索 (MIPS)
 [QuiverVector(128, DistanceMetric.DotProduct)]
 public float[] Feature { get; set; } = [];
+
+// Manhattan — 稀疏特征、推荐系统
+[QuiverVector(256, DistanceMetric.Manhattan)]
+public float[] SparseFeature { get; set; } = [];
+
+// Hamming — 二值哈希码、LSH 指纹
+[QuiverVector(64, DistanceMetric.Hamming)]
+public float[] BinaryHash { get; set; } = [];
 ```
 
-### 4.3 相似度函数映射
+### 4.3 自定义相似度
 
-框架内部根据度量类型创建不同的 `SimilarityFunc` 委托（`ReadOnlySpan<float>, ReadOnlySpan<float> → float`），可直接绑定 `TensorPrimitives` 静态方法组：
+实现 `ISimilarity<float>` 接口定义自定义度量，然后通过 `[QuiverVector]` 的 `CustomSimilarity` 属性指定。设置 `CustomSimilarity` 后，`metric` 参数将被忽略。
 
-| 度量 | PreNormalize | 绑定的函数 |
-|------|-------------|-----------|
-| `Cosine` | `true` | `TensorPrimitives.Dot` |
-| `DotProduct` | `false` | `TensorPrimitives.Dot` |
-| `Euclidean` | `false` | `(a, b) => 1f / (1f + TensorPrimitives.Distance(a, b))` |
-| `Cosine` (fallback) | `false` | `TensorPrimitives.CosineSimilarity` |
+```csharp
+// 1. 定义自定义相似度（readonly struct + ISimilarity<float>）
+public readonly struct WeightedL1Similarity : ISimilarity<float>
+{
+    public static float Compute(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
+    {
+        float sum = 0f;
+        for (int i = 0; i < x.Length; i++)
+            sum += MathF.Abs(x[i] - y[i]) * (i < 128 ? 2f : 1f); // 前 128 维权重 2倍
+        return 1f / (1f + sum);
+    }
+}
+
+// 2. 在实体上使用
+public class MyEntity
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+
+    [QuiverVector(256, CustomSimilarity = typeof(WeightedL1Similarity))]
+    public float[] Embedding { get; set; } = [];
+}
+```
+
+**要求**：
+- 必须是实现 `ISimilarity<float>` 的 `readonly struct`
+- 必须有公共无参构造函数（结构体默认满足）
+- JIT 会在调用站点内联 `TSim.Compute()` —— 与内置度量零开销等价
+
+### 4.4 相似度函数映射
+
+框架内部根据度量类型解析对应的 `ISimilarity<float>` 实现。所有实现均使用 SIMD 加速计算：
+
+| 度量 | PreNormalize | ISimilarity 类型 | SIMD 后端 |
+|------|-------------|-----------------|----------|
+| `Cosine` | `true` | `DotProductSimilarity` | `TensorPrimitives.Dot` |
+| `Cosine` (fallback) | `false` | `CosineSimilarity` | `TensorPrimitives.CosineSimilarity` |
+| `DotProduct` | `false` | `DotProductSimilarity` | `TensorPrimitives.Dot` |
+| `Euclidean` | `false` | `EuclideanSimilarity` | `TensorPrimitives.Distance` |
+| `Manhattan` | `false` | `ManhattanSimilarity` | `Vector<float>` 绝对差累加 |
+| `Chebyshev` | `false` | `ChebyshevSimilarity` | `Vector<float>` 绝对差最大值追踪 |
+| `Pearson` | `false` | `PearsonCorrelationSimilarity` | `TensorPrimitives.Sum` + `Vector<float>` 去均值点积 |
+| `Hamming` | `false` | `HammingSimilarity` | `Vector<float>` 等值掩码 + ConditionalSelect |
+| `Jaccard` | `false` | `JaccardSimilarity` | `Vector<float>` Min/Max 累加 |
+| `Canberra` | `false` | `CanberraSimilarity` | `Vector<float>` 加权除法 |
+| (自定义) | 用户定义 | 用户的 `ISimilarity<float>` | 用户定义 |
 
 ---
 
@@ -2107,6 +2197,11 @@ var options = new QuiverDbOptions
     // 持久化存储格式
     StorageFormat = StorageFormat.Json,
 
+    // 向量存储内存模式
+    // FullMemory: 向量在 GC 堆上（延迟最低）
+    // MemoryMapped: 向量在 OS mmap 区域（零 GC 压力，可处理超出物理内存的数据集）
+    MemoryMode = MemoryMode.FullMemory,
+
     // JSON 序列化选项（仅 StorageFormat.Json 时使用）
     JsonOptions = new JsonSerializerOptions
     {
@@ -2133,6 +2228,7 @@ var options = new QuiverDbOptions
 | `DatabasePath` | `string?` | `null` | 存储路径，`null` 为内存模式（`SaveAsync` 需显式传 `path`） |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | 默认距离度量 |
 | `StorageFormat` | `StorageFormat` | `Json` | 持久化格式：`Json` / `Xml` / `Binary` |
+| `MemoryMode` | `MemoryMode` | `FullMemory` | 向量存储模式：`FullMemory`（GC 堆）/ `MemoryMapped`（mmap 区域，零 GC） |
 | `JsonOptions` | `JsonSerializerOptions` | 缩进 + 驼峰 | JSON 序列化选项 |
 | `EnableWal` | `bool` | `false` | 是否启用 WAL 增量持久化 |
 | `WalCompactionThreshold` | `int` | `10,000` | WAL 记录数达到此值时自动压缩 |
@@ -2162,21 +2258,53 @@ private static Func<TEntity, TResult> CompileGetter<TResult>(PropertyInfo prop)
 }
 ```
 
-### 14.2 SimilarityFunc 委托设计
+### 14.2 ISimilarity\<T\> 静态抽象接口设计
 
-使用 `ReadOnlySpan<float>` 参数类型的委托，可直接绑定 `TensorPrimitives` 方法组，无需额外 lambda 包装：
+使用 C# `static abstract` 接口成员配合 `readonly struct` 类型。JIT 为每个具体类型生成特化机器码，在调用站点直接内联，无虚分派、无委托间接调用：
 
 ```csharp
-// 委托签名
-internal delegate float SimilarityFunc(ReadOnlySpan<float> a, ReadOnlySpan<float> b);
+// 接口定义
+public interface ISimilarity<T> where T : unmanaged, INumber<T>, IRootFunctions<T>
+{
+    static abstract T Compute(ReadOnlySpan<T> x, ReadOnlySpan<T> y);
+}
 
-// 直接绑定 TensorPrimitives 方法组（零开销）
-SimilarityFunc simFunc = TensorPrimitives.Dot;
-SimilarityFunc simFunc = TensorPrimitives.CosineSimilarity;
+// 内置实现（readonly struct，零大小，JIT 内联）
+public readonly struct DotProductSimilarity : ISimilarity<float>
+{
+    public static float Compute(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
+        => TensorPrimitives.Dot(x, y);
+}
 
-// Euclidean 需要变换为相似度
-SimilarityFunc simFunc = (a, b) => 1f / (1f + TensorPrimitives.Distance(a, b));
+public readonly struct ManhattanSimilarity : ISimilarity<float>
+{
+    public static float Compute(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
+    {
+        // 通过 Vector<float> SIMD 加速
+        int i = 0;
+        float sum = 0f;
+        if (Vector.IsHardwareAccelerated && x.Length >= Vector<float>.Count)
+        {
+            var vsum = Vector<float>.Zero;
+            var lastBlock = x.Length - x.Length % Vector<float>.Count;
+            for (; i < lastBlock; i += Vector<float>.Count)
+                vsum += Vector.Abs(new Vector<float>(x[i..]) - new Vector<float>(y[i..]));
+            sum = Vector.Sum(vsum);
+        }
+        for (; i < x.Length; i++)
+            sum += MathF.Abs(x[i] - y[i]);
+        return 1f / (1f + sum);
+    }
+}
 ```
+
+**相比 v1 委托方案的优势**：
+
+| 维度 | v1 `SimilarityFunc` 委托 | v2 `ISimilarity<T>` 静态抽象 |
+|------|-------------------------|------------------------------|
+| 分派 | 间接调用（~2ns 开销） | JIT 内联，零开销 |
+| 泛型 | 仅 `float` | 泛型 `T : INumber<T>`（float、double、Half） |
+| 可扩展性 | 仅框架内部 | 用户实现 `ISimilarity<float>` + `[QuiverVector(CustomSimilarity=...)]` |
 
 ### 14.3 HNSW 层级随机生成
 
@@ -2613,6 +2741,12 @@ public class SearchService
 | `Cosine` | 余弦相似度（预归一化优化） |
 | `Euclidean` | 欧几里得距离（转换为相似度） |
 | `DotProduct` | 内积 |
+| `Manhattan` | 曼哈顿距离 / L1 范数（转换为相似度） |
+| `Chebyshev` | 切比雪夫距离 / L∞ 范数（转换为相似度） |
+| `Pearson` | 皮尔逊相关系数（去均值余弦） |
+| `Hamming` | 汉明相似度（匹配比例） |
+| `Jaccard` | 广义 Jaccard 相似度（Σmin/Σmax） |
+| `Canberra` | 堪培拉距离（转换为相似度） |
 
 #### VectorIndexType
 

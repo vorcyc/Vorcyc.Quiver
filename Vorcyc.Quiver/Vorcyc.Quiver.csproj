@@ -1,53 +1,54 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <BaseOutputPath>..\bin\</BaseOutputPath>
+	<TargetFramework>net10.0</TargetFramework>
+	<ImplicitUsings>enable</ImplicitUsings>
+	<Nullable>enable</Nullable>
+	<BaseOutputPath>..\bin\</BaseOutputPath>
+	  <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-    <!-- 版本号 -->
-    <Version>1.2.2</Version>
-    <AssemblyVersion>1.2.2.0</AssemblyVersion>
-    <FileVersion>1.2.2.0</FileVersion>
+	<!-- 版本号 -->
+	<Version>2.0.0</Version>
+	<AssemblyVersion>2.0.0.0</AssemblyVersion>
+	<FileVersion>2.0.0.0</FileVersion>
 
-    <!-- 程序集信息 -->
-    <AssemblyTitle>Vorcyc.Quiver</AssemblyTitle>
-    <Product>Vorcyc Quiver</Product>
-    <Description>A pure .NET embedded vector database — zero native dependencies, in-process, no server required. EF Core-style Code-First with declarative attributes, multiple ANN indices (Flat/HNSW/IVF/KDTree), WAL incremental persistence, and SIMD-accelerated similarity search.</Description>
-    <Authors>cyclone_dll</Authors>
-    <Company>Vorcyc</Company>
-    <Copyright>Copyright © Vorcyc 2026</Copyright>
+	<!-- 程序集信息 -->
+	<AssemblyTitle>Vorcyc.Quiver</AssemblyTitle>
+	<Product>Vorcyc Quiver</Product>
+	<Description>A pure .NET embedded vector database — zero native dependencies, in-process, no server required. EF Core-style Code-First with declarative attributes, multiple ANN indices (Flat/HNSW/IVF/KDTree), WAL incremental persistence, and SIMD-accelerated similarity search.</Description>
+	<Authors>cyclone_dll</Authors>
+	<Company>Vorcyc</Company>
+	<Copyright>Copyright © Vorcyc 2026</Copyright>
 
-    <!-- NuGet 包 -->
-    <PackageId>Vorcyc.Quiver</PackageId>
-    <PackageTags>vector-database;embedding;ANN;HNSW;IVF;KDTree;cosine-similarity;SIMD;WAL;code-first;EF-Core-style;semantic-search;RAG;face-recognition</PackageTags>
-    <PackageReadmeFile>README_Simple.md</PackageReadmeFile>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/Vorcyc/Vorcyc.Quiver</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/Vorcyc/Vorcyc.Quiver</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
+	<!-- NuGet 包 -->
+	<PackageId>Vorcyc.Quiver</PackageId>
+	<PackageTags>vector-database;embedding;ANN;HNSW;IVF;KDTree;cosine-similarity;SIMD;WAL;code-first;EF-Core-style;semantic-search;RAG;face-recognition</PackageTags>
+	<PackageReadmeFile>README_Simple.md</PackageReadmeFile>
+	<PackageLicenseExpression>MIT</PackageLicenseExpression>
+	<PackageProjectUrl>https://github.com/Vorcyc/Vorcyc.Quiver</PackageProjectUrl>
+	<RepositoryUrl>https://github.com/Vorcyc/Vorcyc.Quiver</RepositoryUrl>
+	<RepositoryType>git</RepositoryType>
 
-    <!-- 构建选项 -->
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
-    <PackageIcon>logo.jpg</PackageIcon>
+	<!-- 构建选项 -->
+	<GenerateDocumentationFile>true</GenerateDocumentationFile>
+	<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+	<PackageIcon>logo.jpg</PackageIcon>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\logo.jpg">
-      <Pack>True</Pack>
-      <PackagePath>\</PackagePath>
-    </None>
-    <None Include="..\README_Simple.md">
-      <Pack>True</Pack>
-      <PackagePath>\</PackagePath>
-    </None>
+	<None Include="..\logo.jpg">
+	  <Pack>True</Pack>
+	  <PackagePath>\</PackagePath>
+	</None>
+	<None Include="..\README_Simple.md">
+	  <Pack>True</Pack>
+	  <PackagePath>\</PackagePath>
+	</None>
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.IO.Hashing" Version="10.0.5" />
-    <PackageReference Include="System.Numerics.Tensors" Version="10.0.5" />
+	<PackageReference Include="System.IO.Hashing" Version="10.0.5" />
+	<PackageReference Include="System.Numerics.Tensors" Version="10.0.5" />
   </ItemGroup>
 
 </Project>

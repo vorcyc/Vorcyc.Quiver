@@ -59,6 +59,21 @@ public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = Dista
     /// </para>
     /// </summary>
     public bool Optional { get; set; }
+
+    /// <summary>
+    /// 自定义相似度计算类型。设置后忽略 <see cref="Metric"/>。
+    /// <para>
+    /// 类型须为 <see langword="struct"/> 且实现 <see cref="Similarity.ISimilarity{T}"/>（T 为 <see cref="float"/>），
+    /// 并有公共无参构造函数。设为 <see langword="null"/>（默认）时使用 <see cref="Metric"/> 对应的内置实现。
+    /// </para>
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// [QuiverVector(128, CustomSimilarity = typeof(ManhattanSimilarity))]
+    /// public float[] Embedding { get; set; }
+    /// </code>
+    /// </example>
+    public Type? CustomSimilarity { get; set; }
 }
 
 /// <summary>
@@ -198,6 +213,12 @@ public enum VectorIndexType
 ///   <item><see cref="Cosine"/>：最常用，适合文本嵌入、语义搜索。方向相似性，不关心向量长度</item>
 ///   <item><see cref="Euclidean"/>：适合空间坐标、物理距离。关心绝对距离</item>
 ///   <item><see cref="DotProduct"/>：适合已归一化的向量或最大内积搜索（MIPS）</item>
+///   <item><see cref="Manhattan"/>：L1 距离，适合稀疏特征、推荐系统</item>
+///   <item><see cref="Chebyshev"/>：L∞ 距离，检测最大维度偏差</item>
+///   <item><see cref="Pearson"/>：皮尔逊相关，适合文本嵌入（去均值后的余弦）</item>
+///   <item><see cref="Hamming"/>：汉明距离，适合二值哈希指纹</item>
+///   <item><see cref="Jaccard"/>：广义 Jaccard，适合 BoW/TF-IDF 稀疏文本特征</item>
+///   <item><see cref="Canberra"/>：堪培拉距离，适合稀疏数据（权重敏感）</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -222,7 +243,55 @@ public enum DistanceMetric
     /// 内积（点积）：<c>a·b = Σ(aᵢ × bᵢ)</c>。值域取决于向量长度。
     /// <para>归一化向量的点积等价于余弦相似度。适合最大内积搜索（MIPS）场景。</para>
     /// </summary>
-    DotProduct
+    DotProduct,
+
+    /// <summary>
+    /// 曼哈顿距离（L1 范数）转相似度：<c>similarity = 1 / (1 + Σ|aᵢ - bᵢ|)</c>。值域 (0, 1]。
+    /// <para>对离群维度不敏感（不平方放大差异）。适合稀疏特征、推荐系统。</para>
+    /// </summary>
+    Manhattan,
+
+    /// <summary>
+    /// 切比雪夫距离（L∞ 范数）转相似度：<c>similarity = 1 / (1 + max|aᵢ - bᵢ|)</c>。值域 (0, 1]。
+    /// <para>仅关注最大维度差异。适合特征偏差检测、棋盘距离。</para>
+    /// </summary>
+    Chebyshev,
+
+    /// <summary>
+    /// 皮尔逊相关系数：去均值后的余弦相似度。值域 [-1, 1]。
+    /// <para>
+    /// 消除向量整体偏移的影响，仅衡量维度间变化模式的线性相关性。
+    /// 适合文本嵌入（去除文档长度偏置）、TF-IDF 文档比较、推荐系统评分向量。
+    /// </para>
+    /// </summary>
+    Pearson,
+
+    /// <summary>
+    /// 汉明相似度：<c>similarity = 1 - (不等元素数 / 总维度)</c>。值域 [0, 1]。
+    /// <para>
+    /// 适合二值化向量、LSH 二进制哈希码、SimHash/MinHash 文本指纹的快速比对。
+    /// 对连续浮点向量通常无意义，建议仅用于二值化或量化后的向量。
+    /// </para>
+    /// </summary>
+    Hamming,
+
+    /// <summary>
+    /// 广义 Jaccard 相似度：<c>similarity = Σmin(aᵢ,bᵢ) / Σmax(aᵢ,bᵢ)</c>。值域 [0, 1]。
+    /// <para>
+    /// 二值向量时退化为标准集合 Jaccard 系数 <c>|A∩B| / |A∪B|</c>。
+    /// 适合 BoW/TF-IDF 稀疏文本特征、直方图特征比较。要求元素非负。
+    /// </para>
+    /// </summary>
+    Jaccard,
+
+    /// <summary>
+    /// 堪培拉距离转相似度：<c>similarity = 1 - (1/n) × Σ|aᵢ-bᵢ|/(|aᵢ|+|bᵢ|)</c>。值域 [0, 1]。
+    /// <para>
+    /// 加权 L1 距离——每个维度按量级归一化，对接近零的值非常敏感。
+    /// 适合稀疏文本特征、化学指纹、量级差异大的混合特征。
+    /// </para>
+    /// </summary>
+    Canberra
 }
 
 /// <summary>
@@ -251,4 +320,40 @@ public enum StorageFormat
     /// </para>
     /// </summary>
     Binary
+}
+
+/// <summary>
+/// 向量索引的运行时内存管理模式，控制向量数据的物理存储位置。
+/// <para>
+/// 通过 <see cref="QuiverDbOptions.MemoryMode"/> 设置。
+/// 不同模式在 GC 压力、物理内存占用和可扩展数据规模之间提供不同权衡。
+/// </para>
+/// </summary>
+/// <seealso cref="QuiverDbOptions"/>
+public enum MemoryMode
+{
+    /// <summary>
+    /// 全量内存模式（默认）。所有向量数据以 <c>float[]</c> 形式驻留在 GC 托管堆上。
+    /// <para>
+    /// 优点：搜索延迟最低，无 page fault 开销。<br/>
+    /// 缺点：向量数据完全占用托管堆内存，大数据集会产生 GC 压力。<br/>
+    /// 适用：中小规模数据集（实体数 &lt; 50 万）或对延迟要求极高的场景。
+    /// </para>
+    /// </summary>
+    FullMemory,
+
+    /// <summary>
+    /// 内存映射模式。向量数据存储在 <see cref="System.IO.MemoryMappedFiles.MemoryMappedFile"/>
+    /// 管理的映射区域（arena 文件），不占用 GC 托管堆。
+    /// 操作系统按需将文件页面换入/换出物理内存。
+    /// <para>
+    /// 优点：向量数据零 GC 压力，物理内存占用由 OS 按访问热度自动管理，可处理超出物理内存的数据集。<br/>
+    /// 缺点：随机访问冷数据可能触发 page fault（延迟 ~μs 级）。<br/>
+    /// 适用：大规模数据集（实体数 &gt; 50 万）或内存受限的部署环境。
+    /// </para>
+    /// <para>
+    /// 要求：必须设置 <see cref="QuiverDbOptions.DatabasePath"/>（用于派生 arena 文件路径）。
+    /// </para>
+    /// </summary>
+    MemoryMapped
 }

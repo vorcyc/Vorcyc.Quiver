@@ -1,6 +1,6 @@
-﻿# Vorcyc Quiver 1.2.2
+﻿# Vorcyc Quiver 2.0.0
 
-![Vorcyc Quiver 1.2.2](logo.jpg "Vorcyc Quiver 1.2.2")
+![Vorcyc Quiver 2.0.0](logo.jpg "Vorcyc Quiver 2.0.0")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
@@ -10,13 +10,28 @@
 
 ---
 
-## ✨ Core Features
+## 🆕 What's New in 2.0.0
+
+> v2.0.0 is fully backward-compatible with v1.x data files — no migration needed.
+
+| Category | Change |
+|----------|--------|
+| **Architecture** | `SimilarityFunc` delegate → `ISimilarity<T>` static abstract interface (JIT-inlined, zero dispatch overhead) |
+| **Architecture** | New `IVectorStore` abstraction: `HeapVectorStore` (GC heap) + `MmapVectorStore` (memory-mapped arena) |
+| **New Metrics** | 6 new: Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra (total 9 built-in) |
+| **Custom Similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySim))]` — plug in any `ISimilarity<float>` struct |
+| **Memory Mode** | `MemoryMode.MemoryMapped` — vectors in OS-managed mmap, zero GC pressure, exceeds physical RAM |
+| **SIMD** | All 9 metrics use `Vector<float>` / `TensorPrimitives` SIMD, auto-adapts to SSE4/AVX2/AVX-512 |
+
+---
 
 - **Code-First Declarative Modeling** — Annotate entity classes with attributes; the framework auto-discovers and registers `QuiverSet<T>` collections via reflection — zero configuration.
 - **Multiple ANN Index Algorithms** — Built-in Flat (brute-force), HNSW, IVF, and KDTree indexes, covering small-scale exact search to million-scale approximate search.
+- **9 Distance Metrics + Custom Similarity** — Cosine, Euclidean, DotProduct, Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra. Or plug in your own `ISimilarity<float>`.
 - **Flexible Persistence** — JSON (readable), XML (compatible), Binary (high-performance) formats, plus WAL incremental persistence reducing complexity from O(N) to O(Δ).
 - **Concurrency Safe** — `QuiverSet<T>` uses `ReaderWriterLockSlim` internally; concurrent reads and writes are safe out-of-the-box.
-- **SIMD Accelerated** — `TensorPrimitives`-based SIMD for vector similarity and L2 normalization.
+- **SIMD Accelerated** — All similarity implementations use `TensorPrimitives` + `Vector<float>` SIMD, auto-adapting to SSE4/AVX2/AVX-512.
+- **Memory-Mapped Storage** — Optional `MemoryMode.MemoryMapped` for zero-GC vector storage via OS mmap arena files.
 - **Schema Migration** — Property rename and value transform via `ConfigureMigration<T>()`. Adding/removing fields requires no configuration.
 
 **Typical Use Cases**: Semantic search · RAG · Face recognition · Image-to-image search · Recommendation systems · Multimodal retrieval
@@ -95,6 +110,14 @@ foreach (var r in results)
 | `Cosine` | [-1, 1] | Text embeddings, semantic search |
 | `Euclidean` | (0, 1] | Spatial coordinates, physical distances |
 | `DotProduct` | $(-\infty, +\infty)$ | Pre-normalized vectors, MIPS |
+| `Manhattan` | (0, 1] | Sparse features, recommendation systems |
+| `Chebyshev` | (0, 1] | Feature deviation detection, grid distances |
+| `Pearson` | [-1, 1] | Text embeddings (de-biased), TF-IDF, ratings |
+| `Hamming` | [0, 1] | Binary hash codes, LSH, SimHash fingerprints |
+| `Jaccard` | [0, 1] | BoW/TF-IDF sparse features, histograms |
+| `Canberra` | [0, 1] | Sparse data (weight-sensitive), chemical fingerprints |
+
+Or define your own: `[QuiverVector(128, CustomSimilarity = typeof(MyMetric))]`
 
 ---
 
@@ -249,6 +272,7 @@ public class MyDb : QuiverDbContext
 | `DatabasePath` | `string?` | `null` | Storage path; `null` = in-memory mode |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | Default distance metric |
 | `StorageFormat` | `StorageFormat` | `Json` | `Json` / `Xml` / `Binary` |
+| `MemoryMode` | `MemoryMode` | `FullMemory` | `FullMemory` (GC heap) / `MemoryMapped` (mmap, zero GC) |
 | `JsonOptions` | `JsonSerializerOptions` | Indented + CamelCase | JSON serialization options |
 | `EnableWal` | `bool` | `false` | Enable WAL incremental persistence |
 | `WalCompactionThreshold` | `int` | `10,000` | Auto-compact threshold |

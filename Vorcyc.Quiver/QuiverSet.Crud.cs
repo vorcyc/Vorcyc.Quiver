@@ -60,7 +60,10 @@ public partial class QuiverSet<TEntity>
                 _keyToId[batch[idx].Key] = id;
 
                 foreach (var (name, vector) in batch[idx].Vectors)
-                    _indices[name].Add(id, vector);
+                {
+                    _vectorStores[name].Store(id, vector);
+                    _indices[name].Add(id);
+                }
 
                 _changeLog.Add((1, batch[idx].Key, entityList[idx]));
             }
@@ -204,6 +207,8 @@ public partial class QuiverSet<TEntity>
             _nextId = 0;
             foreach (var index in _indices.Values)
                 index.Clear();
+            foreach (var store in _vectorStores.Values)
+                store.Clear();
 
             _changeLog.Add((3, null, null)); // Op=3: Clear
         }
@@ -232,7 +237,10 @@ public partial class QuiverSet<TEntity>
         _keyToId[key] = id;
 
         foreach (var (name, indexVector) in prepared)
-            _indices[name].Add(id, indexVector);
+        {
+            _vectorStores[name].Store(id, indexVector);
+            _indices[name].Add(id);
+        }
 
         if (logChanges)
             _changeLog.Add((1, key, entity)); // Op=1: Add
@@ -291,6 +299,8 @@ public partial class QuiverSet<TEntity>
         _keyToId.Remove(key);
         foreach (var index in _indices.Values)
             index.Remove(id);
+        foreach (var store in _vectorStores.Values)
+            store.Remove(id);
 
         if (logChanges)
             _changeLog.Add((2, key, null)); // Op=2: Remove

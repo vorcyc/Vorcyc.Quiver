@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using Vorcyc.Quiver.Similarity;
 
 namespace Vorcyc.Quiver.Indexing;
 
@@ -14,15 +15,19 @@ namespace Vorcyc.Quiver.Indexing;
 /// <para>
 /// 时间复杂度：O(n × d)，其中 n 为向量数量，d 为向量维度。
 /// </para>
+/// <para>
+/// 类型参数 <typeparamref name="TSim"/> 在 JIT 编译期特化，
+/// <c>TSim.Compute()</c> 被内联为直接调用（无虚分派、无委托间接调用）。
+/// </para>
 /// </summary>
-/// <param name="similarityFunc">
-/// 相似度计算函数。由 <see cref="QuiverSet{TEntity}"/> 根据距离度量注入，
-/// 通常为 <c>TensorPrimitives.Dot</c>、<c>CosineSimilarity</c> 或欧几里得变换。
-/// </param>
-internal sealed class FlatIndex(SimilarityFunc similarityFunc) : IVectorIndex
+/// <typeparam name="TSim">相似度算法类型，须为 struct 以启用 JIT 特化。</typeparam>
+internal sealed class FlatIndex<TSim> : IVectorIndex
+    where TSim : struct, ISimilarity<float>
 {
-    /// <summary>内部 ID → 向量数据的映射。向量在写入时已完成归一化或防御性复制。</summary>
-    private readonly Dictionary<int, float[]> _vectors = [];
+    private readonly IVectorStore _vectorStore;
+
+    /// <summary>索引中已注册的内部 ID 集合。向量数据由 <see cref="_vectorStore"/> 管理。</summary>
+    private readonly HashSet<int> _ids = [];
 
     /// <summary>
     /// 并行搜索阈值。超过此数量时使用 <see cref="Parallel.ForEach"/> 多线程搜索。
@@ -30,18 +35,22 @@ internal sealed class FlatIndex(SimilarityFunc similarityFunc) : IVectorIndex
     /// </summary>
     private const int ParallelThreshold = 10_000;
 
-    /// <inheritdoc />
-    public int Count => _vectors.Count;
+    internal FlatIndex(IVectorStore vectorStore)
+    {
+        _vectorStore = vectorStore;
+    }
 
     /// <inheritdoc />
-    /// <remarks>使用字典索引器赋值，相同 ID 会覆盖旧向量。</remarks>
-    public void Add(int id, float[] vector) => _vectors[id] = vector;
+    public int Count => _ids.Count;
 
     /// <inheritdoc />
-    public void Remove(int id) => _vectors.Remove(id);
+    public void Add(int id) => _ids.Add(id);
 
     /// <inheritdoc />
-    public void Clear() => _vectors.Clear();
+    public void Remove(int id) => _ids.Remove(id);
+
+    /// <inheritdoc />
+    public void Clear() => _ids.Clear();
 
     /// <summary>
     /// 搜索与查询向量最相似的 Top-K 个结果。
@@ -52,10 +61,10 @@ internal sealed class FlatIndex(SimilarityFunc similarityFunc) : IVectorIndex
     /// <returns>按相似度降序排列的 (内部ID, 相似度) 列表。</returns>
     public List<(int Id, float Similarity)> Search(float[] query, int topK)
     {
-        if (_vectors.Count == 0) return [];
+        if (_ids.Count == 0) return [];
 
         // 小数据量顺序遍历更快，大数据量并行计算更优
-        return _vectors.Count > ParallelThreshold
+        return _ids.Count > ParallelThreshold
             ? ParallelSearchCore(query, topK)
             : SequentialSearchCore(query, topK);
     }
@@ -70,9 +79,9 @@ internal sealed class FlatIndex(SimilarityFunc similarityFunc) : IVectorIndex
     public List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold)
     {
         var results = new List<(int Id, float Similarity)>();
-        foreach (var (id, vector) in _vectors)
+        foreach (var id in _ids)
         {
-            var sim = similarityFunc(query, vector);
+            var sim = TSim.Compute(query, _vectorStore.Get(id));
             if (sim >= threshold)
                 results.Add((id, sim));
         }
@@ -85,12 +94,10 @@ internal sealed class FlatIndex(SimilarityFunc similarityFunc) : IVectorIndex
     /// </summary>
     private List<(int Id, float Similarity)> SequentialSearchCore(float[] query, int topK)
     {
-        // 预分配完整容量，避免 List 扩容
-        var results = new List<(int Id, float Sim)>(_vectors.Count);
-        foreach (var (id, vector) in _vectors)
-            results.Add((id, similarityFunc(query, vector)));
+        var results = new List<(int Id, float Sim)>(_ids.Count);
+        foreach (var id in _ids)
+            results.Add((id, TSim.Compute(query, _vectorStore.Get(id))));
 
-        // OrderByDescending + Take 实现 Top-K 选择
         return results.OrderByDescending(r => r.Sim).Take(topK).ToList();
     }
 
@@ -104,15 +111,15 @@ internal sealed class FlatIndex(SimilarityFunc similarityFunc) : IVectorIndex
     /// </summary>
     private List<(int Id, float Similarity)> ParallelSearchCore(float[] query, int topK)
     {
+        // 拍摄 ID 快照供并行遍历（避免跨线程枚举 HashSet）
+        var ids = _ids.ToArray();
         var results = new ConcurrentBag<(int Id, float Similarity)>();
 
-        // 每个线程独立计算分配到的向量的相似度，结果汇入 ConcurrentBag
-        Parallel.ForEach(_vectors, kvp =>
+        Parallel.ForEach(ids, id =>
         {
-            results.Add((kvp.Key, similarityFunc(query, kvp.Value)));
+            results.Add((id, TSim.Compute(query, _vectorStore.Get(id))));
         });
 
-        // 汇总后排序取 Top-K（排序在单线程执行）
         return results.OrderByDescending(r => r.Similarity).Take(topK).ToList();
     }
 }

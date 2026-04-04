@@ -112,6 +112,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     protected QuiverDbContext(QuiverDbOptions options)
     {
         _options = options;
+        options.Validate();
         _storageProvider = StorageProviderFactory.Create(options);
 
         // 反射扫描子类属性，自动创建并注入所有 QuiverSet<T> 实例
@@ -150,12 +151,12 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
             // 提取泛型参数 T（如 QuiverSet<Document> → typeof(Document)）
             var entityType = prop.PropertyType.GetGenericArguments()[0];
 
-            // 调用 QuiverSet<T> 的 internal 构造函数，传入默认度量参数
+            // 调用 QuiverSet<T> 的 internal 构造函数，传入配置参数
             var setInstance = Activator.CreateInstance(
                 typeof(QuiverSet<>).MakeGenericType(entityType),
                 BindingFlags.Instance | BindingFlags.NonPublic,
                 null,
-                [_options.DefaultMetric],
+                [_options.DefaultMetric, _options.MemoryMode, _options.DatabasePath],
                 null);
 
             // 注册到内部字典

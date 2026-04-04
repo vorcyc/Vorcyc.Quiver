@@ -1,4 +1,6 @@
-﻿namespace Vorcyc.Quiver.Indexing;
+﻿using Vorcyc.Quiver.Similarity;
+
+namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
 /// HNSW（Hierarchical Navigable Small World）索引：分层可导航小世界图，用于近似最近邻搜索。
@@ -24,14 +26,16 @@
 /// </para>
 /// </summary>
 /// <seealso href="https://arxiv.org/abs/1603.09320">论文：Efficient and robust approximate nearest neighbor search using HNSW graphs</seealso>
-internal sealed class HnswIndex : IVectorIndex
+/// <typeparam name="TSim">相似度算法类型，须为 struct 以启用 JIT 特化。</typeparam>
+internal sealed class HnswIndex<TSim> : IVectorIndex
+    where TSim : struct, ISimilarity<float>
 {
     // ──────────────────────────────────────────────────────────────
     // 算法参数（构造后不变）
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>相似度计算函数，由外部注入（通常为 TensorPrimitives.Dot 或 CosineSimilarity）。</summary>
-    private readonly SimilarityFunc _similarityFunc;
+    /// <summary>向量数据存储，由外部注入。节点不再持有向量，需要时通过此接口读取。</summary>
+    private readonly IVectorStore _vectorStore;
 
     /// <summary>
     /// 每层最大邻居连接数（第 1 层及以上）。
@@ -85,21 +89,18 @@ internal sealed class HnswIndex : IVectorIndex
     #region 节点定义
 
     /// <summary>
-    /// HNSW 图中的单个节点，存储向量数据和各层级的邻居连接。
+    /// HNSW 图中的单个节点，存储内部 ID 和各层级的邻居连接。
+    /// 向量数据由 <see cref="IVectorStore"/> 统一管理，节点不再持有向量引用。
     /// </summary>
-    /// <param name="id">节点的内部 ID（与 VectorSet 的内部 ID 一致）。</param>
-    /// <param name="vector">节点的向量数据（已归一化或已复制）。</param>
+    /// <param name="id">节点的内部 ID（与 QuiverSet 的内部 ID 一致）。</param>
     /// <param name="maxLevel">
     /// 该节点存在的最高层级。节点存在于第 0 层到第 maxLevel 层。
     /// 由 <see cref="RandomLevel"/> 随机生成，服从指数衰减分布。
     /// </param>
-    private sealed class HnswNode(int id, float[] vector, int maxLevel)
+    private sealed class HnswNode(int id, int maxLevel)
     {
         /// <summary>节点的内部 ID。</summary>
         public readonly int Id = id;
-
-        /// <summary>节点的向量数据。</summary>
-        public readonly float[] Vector = vector;
 
         /// <summary>该节点存在的最高层级。</summary>
         public readonly int MaxLevel = maxLevel;
@@ -124,17 +125,17 @@ internal sealed class HnswIndex : IVectorIndex
     /// <summary>
     /// 创建 HNSW 索引实例。
     /// </summary>
-    /// <param name="similarityFunc">相似度计算函数。</param>
+    /// <param name="vectorStore">向量数据存储。</param>
     /// <param name="m">
     /// 每层最大邻居数（第 1 层及以上）。第 0 层自动设为 <c>m × 2</c>。默认 16。
     /// </param>
     /// <param name="efConstruction">构建阶段候选集大小。默认 200。</param>
     /// <param name="efSearch">搜索阶段候选集大小。默认 50。可通过 <see cref="EfSearch"/> 属性运行时调整。</param>
     public HnswIndex(
-        SimilarityFunc similarityFunc,
+        IVectorStore vectorStore,
         int m = 16, int efConstruction = 200, int efSearch = 50)
     {
-        _similarityFunc = similarityFunc;
+        _vectorStore = vectorStore;
         _m = m;
         _mMax0 = m * 2;           // 底层连接数加倍，论文推荐值
         _efConstruction = efConstruction;
@@ -160,13 +161,12 @@ internal sealed class HnswIndex : IVectorIndex
     ///   <item>若新节点层级超过当前最高层，更新入口点</item>
     /// </list>
     /// </summary>
-    /// <param name="id">内部 ID。</param>
-    /// <param name="vector">向量数据。</param>
-    public void Add(int id, float[] vector)
+    /// <param name="id">内部 ID，向量已存入 <see cref="IVectorStore"/>。</param>
+    public void Add(int id)
     {
         // 步骤 1：随机生成层级（指数衰减分布，大多数节点在第 0 层）
         var level = RandomLevel();
-        var node = new HnswNode(id, vector, level);
+        var node = new HnswNode(id, level);
         _nodes[id] = node;
 
         // 空图时，第一个节点直接成为入口点
@@ -176,6 +176,9 @@ internal sealed class HnswIndex : IVectorIndex
             _maxLevel = level;
             return;
         }
+
+        // 从 store 读取向量用于建图（ReadOnlySpan 在同步上下文中安全使用）
+        var vector = _vectorStore.Get(id);
 
         var ep = _entryPointId;
 
@@ -240,9 +243,11 @@ internal sealed class HnswIndex : IVectorIndex
     /// <param name="maxConnections">该层允许的最大连接数。</param>
     private void PruneConnections(HnswNode node, int level, int maxConnections)
     {
+        // 物化为 float[] —— ReadOnlySpan 是 ref struct，不能在 lambda 中捕获
+        var nodeVector = _vectorStore.Get(node.Id).ToArray();
         node.Neighbors[level] = [.. node.Neighbors[level]
             .Where(nId => _nodes.ContainsKey(nId))                                   // 过滤已删除的无效邻居
-            .Select(nId => (Id: nId, Sim: _similarityFunc(node.Vector, _nodes[nId].Vector)))  // 计算相似度
+            .Select(nId => (Id: nId, Sim: TSim.Compute(nodeVector, _vectorStore.Get(nId))))  // 计算相似度
             .OrderByDescending(x => x.Sim)                                           // 按相似度降序
             .Take(maxConnections)                                                     // 保留 Top-N
             .Select(x => x.Id)];
@@ -368,14 +373,14 @@ internal sealed class HnswIndex : IVectorIndex
     /// <param name="level">搜索的图层级。</param>
     /// <returns>最多 ef 个最相似节点的 (ID, 相似度) 列表。</returns>
     private List<(int Id, float Similarity)> SearchLayer(
-        float[] query, int entryPointId, int ef, int level)
+        ReadOnlySpan<float> query, int entryPointId, int ef, int level)
     {
         if (!_nodes.TryGetValue(entryPointId, out var epNode))
             return [];
 
         // 已访问集合，防止重复计算
         var visited = new HashSet<int> { entryPointId };
-        var epSim = _similarityFunc(query, epNode.Vector);
+        var epSim = TSim.Compute(query, _vectorStore.Get(epNode.Id));
 
         // candidates：最大堆（用负相似度模拟），优先探索相似度最高的候选
         var candidates = new PriorityQueue<int, float>();
@@ -407,9 +412,9 @@ internal sealed class HnswIndex : IVectorIndex
             {
                 // 跳过已访问节点（HashSet.Add 返回 false 表示已存在）
                 if (!visited.Add(neighborId)) continue;
-                if (!_nodes.TryGetValue(neighborId, out var neighborNode)) continue;
+                if (!_nodes.ContainsKey(neighborId)) continue;
 
-                var neighborSim = _similarityFunc(query, neighborNode.Vector);
+                var neighborSim = TSim.Compute(query, _vectorStore.Get(neighborId));
 
                 results.TryPeek(out _, out var currentWorstSim);
 

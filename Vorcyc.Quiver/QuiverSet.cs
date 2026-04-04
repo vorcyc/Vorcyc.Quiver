@@ -5,6 +5,7 @@ using System.Linq.Expressions;
 using System.Numerics.Tensors;
 using System.Reflection;
 using Vorcyc.Quiver.Indexing;
+using Vorcyc.Quiver.Similarity;
 
 namespace Vorcyc.Quiver;
 
@@ -24,7 +25,7 @@ namespace Vorcyc.Quiver;
 /// 来源于 <see cref="QuiverVectorAttribute.Metric"/>。
 /// </param>
 /// <param name="IndexConfig">
-/// 索引配置。为 <c>null</c> 时使用 <see cref="Indexing.FlatIndex"/> 暴力搜索。
+/// 索引配置。为 <c>null</c> 时使用 <see cref="Indexing.FlatIndex{TSim}"/> 暴力搜索。
 /// 来源于属性上的 <see cref="QuiverIndexAttribute"/>（可选标记）。
 /// </param>
 /// <param name="PreNormalize">
@@ -103,6 +104,9 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     /// <summary>向量字段名称 → 对应的向量索引实例。构造后冻结。</summary>
     private readonly FrozenDictionary<string, IVectorIndex> _indices;
 
+    /// <summary>向量字段名称 → 向量数据存储实例。构造后冻结。</summary>
+    private readonly FrozenDictionary<string, IVectorStore> _vectorStores;
+
     /// <summary>
     /// 当实体仅有一个向量字段时缓存的默认字段信息，避免每次搜索调用 _vectorFields.First()。
     /// 多字段实体时为 <c>null</c>。
@@ -129,16 +133,25 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
     /// <summary>
     /// 初始化向量集合。通过反射扫描 <typeparamref name="TEntity"/> 的属性，
-    /// 自动发现主键和向量字段，编译属性访问器，并为每个向量字段创建对应的索引实例。
+    /// 自动发现主键和向量字段，编译属性访问器，并为每个向量字段创建对应的索引和存储实例。
     /// </summary>
     /// <param name="defaultMetric">
     /// 默认距离度量。当前未使用（度量从 <see cref="QuiverVectorAttribute.Metric"/> 读取），
     /// 保留用于未来扩展。
     /// </param>
+    /// <param name="memoryMode">
+    /// 内存管理模式。决定向量数据的物理存储位置（GC 堆 / 内存映射区域）。
+    /// </param>
+    /// <param name="databasePath">
+    /// 数据库路径。<see cref="MemoryMode.MemoryMapped"/> 模式下用于派生 arena 文件路径。
+    /// </param>
     /// <exception cref="InvalidOperationException">
     /// 实体类型缺少 <see cref="QuiverKeyAttribute"/> 主键，或没有任何 <see cref="QuiverVectorAttribute"/> 向量字段。
     /// </exception>
-    internal QuiverSet(DistanceMetric defaultMetric = DistanceMetric.Cosine)
+    internal QuiverSet(
+        DistanceMetric defaultMetric = DistanceMetric.Cosine,
+        MemoryMode memoryMode = MemoryMode.FullMemory,
+        string? databasePath = null)
     {
         var type = typeof(TEntity);
 
@@ -155,6 +168,7 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
         var vectorFields = new Dictionary<string, QuiverFieldInfo>();
         var vectorGetters = new Dictionary<string, Func<TEntity, float[]?>>();
+        var vectorStores = new Dictionary<string, IVectorStore>();
         var indices = new Dictionary<string, IVectorIndex>();
 
         foreach (var prop in vectorProps)
@@ -166,18 +180,39 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             var vectorAttr = prop.GetCustomAttribute<QuiverVectorAttribute>()!;
             var indexAttr = prop.GetCustomAttribute<QuiverIndexAttribute>();
             var metric = vectorAttr.Metric;
-            var preNormalize = metric == DistanceMetric.Cosine;
+            var preNormalize = vectorAttr.CustomSimilarity is null && metric == DistanceMetric.Cosine;
 
             vectorFields[prop.Name] = new QuiverFieldInfo(
                 vectorAttr.Dimensions, metric, indexAttr, preNormalize, vectorAttr.Optional);
 
             vectorGetters[prop.Name] = CompileGetter<float[]?>(prop);
 
-            SimilarityFunc simFunc = preNormalize
-                ? TensorPrimitives.Dot
-                : CreateSimilarityFunc(metric);
+            // ── 为每个向量字段创建对应的 IVectorStore ──
+            var store = CreateVectorStore(memoryMode, databasePath, type.Name, prop.Name, vectorAttr.Dimensions);
+            vectorStores[prop.Name] = store;
 
-            indices[prop.Name] = CreateIndex(indexAttr, simFunc);
+            // ── 创建对应的向量索引实例（通过泛型辅助方法消除度量×索引的笛卡尔积）──
+            if (vectorAttr.CustomSimilarity is { } customSimType)
+            {
+                // 自定义度量：运行时 Type → 泛型索引实例（反射仅在构造时执行一次）
+                indices[prop.Name] = CreateIndexReflection(indexAttr, customSimType, store);
+            }
+            else
+            {
+                indices[prop.Name] = (preNormalize, metric) switch
+                {
+                    (true, _) => CreateIndex<DotProductSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.DotProduct) => CreateIndex<DotProductSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.Euclidean) => CreateIndex<EuclideanSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.Manhattan) => CreateIndex<ManhattanSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.Chebyshev) => CreateIndex<ChebyshevSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.Pearson) => CreateIndex<PearsonCorrelationSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.Hamming) => CreateIndex<HammingSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.Jaccard) => CreateIndex<JaccardSimilarity>(indexAttr, store),
+                    (_, DistanceMetric.Canberra) => CreateIndex<CanberraSimilarity>(indexAttr, store),
+                    _ => CreateIndex<CosineSimilarity>(indexAttr, store)
+                };
+            }
         }
 
         if (vectorFields.Count == 0)
@@ -185,6 +220,7 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
         _vectorFields = vectorFields.ToFrozenDictionary();
         _vectorGetters = vectorGetters.ToFrozenDictionary();
+        _vectorStores = vectorStores.ToFrozenDictionary();
         _indices = indices.ToFrozenDictionary();
 
         if (_vectorFields.Count == 1)
@@ -335,30 +371,53 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 根据距离度量类型创建相似度计算委托。
+    /// 根据内存模式创建对应的向量存储实例。
     /// </summary>
-    private static SimilarityFunc CreateSimilarityFunc(DistanceMetric metric) => metric switch
+    private static IVectorStore CreateVectorStore(
+        MemoryMode mode, string? databasePath, string typeName, string fieldName, int dimensions)
     {
-        DistanceMetric.DotProduct => TensorPrimitives.Dot,
-        DistanceMetric.Euclidean => (a, b) => 1f / (1f + TensorPrimitives.Distance(a, b)),
-        _ => TensorPrimitives.CosineSimilarity
-    };
+        return mode switch
+        {
+            MemoryMode.MemoryMapped => new MmapVectorStore(
+                $"{databasePath}.{typeName}.{fieldName}.vec", dimensions),
+            _ => new HeapVectorStore()
+        };
+    }
 
     /// <summary>
-    /// 根据索引配置创建对应的向量索引实例。
+    /// 泛型索引工厂：根据索引配置创建对应的向量索引实例。
+    /// 一个方法覆盖全部索引类型，通过 <typeparamref name="TSim"/> 注入相似度算法。
     /// </summary>
-    private static IVectorIndex CreateIndex(QuiverIndexAttribute? config, SimilarityFunc simFunc)
+    private static IVectorIndex CreateIndex<TSim>(QuiverIndexAttribute? config, IVectorStore store)
+        where TSim : struct, ISimilarity<float>
     {
-        if (config == null || config.IndexType == VectorIndexType.Flat)
-            return new FlatIndex(simFunc);
+        if (config is null || config.IndexType == VectorIndexType.Flat)
+            return new FlatIndex<TSim>(store);
 
         return config.IndexType switch
         {
-            VectorIndexType.HNSW => new HnswIndex(simFunc, config.M, config.EfConstruction, config.EfSearch),
-            VectorIndexType.IVF => new IvfIndex(simFunc, config.NumClusters, config.NumProbes),
-            VectorIndexType.KDTree => new KDTreeIndex(simFunc),
-            _ => new FlatIndex(simFunc)
+            VectorIndexType.HNSW => new HnswIndex<TSim>(store, config.M, config.EfConstruction, config.EfSearch),
+            VectorIndexType.IVF => new IvfIndex<TSim>(store, config.NumClusters, config.NumProbes),
+            VectorIndexType.KDTree => new KDTreeIndex<TSim>(store),
+            _ => new FlatIndex<TSim>(store)
         };
+    }
+
+    /// <summary>
+    /// 反射索引工厂：运行时将自定义度量 <see cref="Type"/> 转换为泛型参数，
+    /// 调用 <see cref="CreateIndex{TSim}"/> 创建索引实例。仅在构造时执行一次。
+    /// </summary>
+    private static IVectorIndex CreateIndexReflection(
+        QuiverIndexAttribute? config, Type simType, IVectorStore store)
+    {
+        if (!simType.IsValueType || !typeof(ISimilarity<float>).IsAssignableFrom(simType))
+            throw new InvalidOperationException(
+                $"CustomSimilarity type '{simType.Name}' must be a struct implementing ISimilarity<float>.");
+
+        var method = typeof(QuiverSet<TEntity>)
+            .GetMethod(nameof(CreateIndex), BindingFlags.Static | BindingFlags.NonPublic)!
+            .MakeGenericMethod(simType);
+        return (IVectorIndex)method.Invoke(null, [config, store])!;
     }
 
     #endregion
@@ -366,13 +425,16 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     #region Dispose
 
     /// <summary>
-    /// 释放所有资源：索引实例和读写锁。
+    /// 释放所有资源：向量存储、索引实例和读写锁。
     /// 使用 <see cref="Interlocked.Exchange"/> 保证并发调用时仅执行一次释放逻辑。
     /// </summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+
+        foreach (var store in _vectorStores.Values)
+            store.Dispose();
 
         foreach (var index in _indices.Values)
         {

@@ -18,7 +18,7 @@
 |----------|--------|
 | **Architecture** | `SimilarityFunc` delegate → `ISimilarity<T>` static abstract interface (JIT-inlined, zero dispatch overhead) |
 | **Architecture** | New `IVectorStore` abstraction: `HeapVectorStore` (GC heap) + `MmapVectorStore` (memory-mapped arena) |
-| **New Metrics** | 6 new: Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra (total 9 built-in) |
+| **New Metrics** | 6 new: Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra — plus the original 3 (Cosine / Euclidean / DotProduct), totaling 9 built-in |
 | **Custom Similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySim))]` — plug in any `ISimilarity<float>` struct |
 | **Memory Mode** | `MemoryMode.MemoryMapped` — vectors in OS-managed mmap, zero GC pressure, exceeds physical RAM |
 | **SIMD** | All 9 metrics use `Vector<float>` / `TensorPrimitives` SIMD, auto-adapts to SSE4/AVX2/AVX-512 |

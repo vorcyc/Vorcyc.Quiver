@@ -40,7 +40,7 @@ Therefore, I decided to design a brand-new vector database framework that would 
 
 | Feature | Description |
 |---------|-------------|
-| **6 new distance metrics** | Manhattan (L1), Chebyshev (L∞), Pearson correlation, Hamming, Jaccard, Canberra — total 9 built-in metrics |
+| **6 new distance metrics** | Manhattan (L1), Chebyshev (L∞), Pearson correlation, Hamming, Jaccard, Canberra — plus the original 3 (Cosine / Euclidean / DotProduct), totaling 9 built-in metrics |
 | **Custom similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySimilarity))]` — plug in any `ISimilarity<float>` struct |
 | **Memory-mapped vector storage** | `MemoryMode.MemoryMapped` — vectors in OS-managed mmap arena, zero GC pressure, handles datasets exceeding physical memory |
 | **IVectorStore abstraction** | `HeapVectorStore` (GC heap, default) and `MmapVectorStore` (mmap file) — pluggable vector storage backends |

@@ -40,7 +40,7 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 
 | 功能 | 说明 |
 |------|------|
-| **6 种新距离度量** | Manhattan（L1）、Chebyshev（L∞）、Pearson 相关、Hamming、Jaccard、Canberra —— 共 9 种内置度量 |
+| **6 种新距离度量** | Manhattan（L1）、Chebyshev（L∞）、Pearson 相关、Hamming、Jaccard、Canberra —— 加上原有 3 种（Cosine / Euclidean / DotProduct），共 9 种内置度量 |
 | **自定义相似度** | `[QuiverVector(128, CustomSimilarity = typeof(MySimilarity))]` —— 接入任意 `ISimilarity<float>` 结构体 |
 | **内存映射向量存储** | `MemoryMode.MemoryMapped` —— 向量存储在 OS 管理的 mmap 区域，零 GC 压力，可处理超出物理内存的数据集 |
 | **IVectorStore 抽象** | `HeapVectorStore`（GC 堆，默认）和 `MmapVectorStore`（mmap 文件）—— 可插拔的向量存储后端 |

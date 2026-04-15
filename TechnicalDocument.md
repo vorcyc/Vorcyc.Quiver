@@ -137,7 +137,7 @@ var options = new QuiverDbOptions
 
 ### 变更三：6 种新距离度量（3 → 9 种内置）
 
-v1.x 仅支持 Cosine / Euclidean / DotProduct。v2.0.0 新增 6 种度量，全部使用 `Vector<float>` SIMD 加速：
+v1.x 仅支持 Cosine / Euclidean / DotProduct 共 3 种度量。v2.0.0 新增以下 6 种，加上原有 3 种共 9 种内置度量，全部使用 `Vector<float>` SIMD 加速：
 
 | 新增度量 | 公式 | 值域 | SIMD 策略 | 适用场景 |
 |---------|------|------|-----------|----------|

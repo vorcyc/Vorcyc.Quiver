@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Vorcyc.Quiver;
 using static AllBasicTests.TestHelper;
 
@@ -22,7 +22,7 @@ public static class ConcurrencyTests
         var path = "test_concurrent_read.vdb";
         var random = new Random(42);
 
-        var db = new MyMultiVectorDb(path, StorageFormat.Binary);
+        var db = new MyMultiVectorDb(path);
         for (int i = 0; i < 3000; i++)
         {
             db.Items.Add(new MultiVectorEntity
@@ -70,7 +70,7 @@ public static class ConcurrencyTests
         await Task.WhenAll(tasks);
         var elapsed = sw.ElapsedMilliseconds;
 
-        Console.WriteLine($"  {readerCount} 线程 × {searchesPerReader} 次 = {totalSearches} 次搜索（3 字段轮询），耗时 {elapsed}ms");
+        Console.WriteLine($"  {readerCount} 线程 × {searchesPerReader} 次 = {totalSearches} 次搜索（3 字段轮转），耗时 {elapsed}ms");
         Assert(errors == 0, $"并发多字段搜索 {totalSearches} 次零异常");
         Assert(totalSearches == readerCount * searchesPerReader, "全部搜索任务已完成");
 
@@ -85,7 +85,7 @@ public static class ConcurrencyTests
         var path = "test_concurrent_rw.vdb";
         var random = new Random(42);
 
-        var db = new MyMultiVectorDb(path, StorageFormat.Binary);
+        var db = new MyMultiVectorDb(path);
         for (int i = 0; i < 1000; i++)
         {
             db.Items.Add(new MultiVectorEntity
@@ -175,7 +175,7 @@ public static class ConcurrencyTests
         Assert(readErrors == 0, $"并发读写：读操作零异常（{readCount} 次）");
 
         await db.SaveAsync();
-        var dbRead = new MyMultiVectorDb(path, StorageFormat.Binary);
+        var dbRead = new MyMultiVectorDb(path);
         await dbRead.LoadAsync();
         Assert(dbRead.Items.Count > 0, $"并发操作后持久化成功，加载 {dbRead.Items.Count} 条");
 
@@ -187,7 +187,7 @@ public static class ConcurrencyTests
     {
         Console.WriteLine("\n═══ 9. 并发 AddRange + 多字段 Search ═══");
 
-        var db = new MyMultiVectorDb("test_concurrent_batch.vdb", StorageFormat.Binary);
+        var db = new MyMultiVectorDb("test_concurrent_batch.vdb");
         var batchErrors = 0;
         var searchErrors = 0;
         var batchCount = 0;
@@ -215,7 +215,7 @@ public static class ConcurrencyTests
                     Interlocked.Increment(ref batchCount);
                     batchId++;
                 }
-                catch (InvalidOperationException) { /* 主键冲突，预期行为 */ }
+                catch (InvalidOperationException) { /* 主键冲突，预期内 */ }
                 catch { Interlocked.Increment(ref batchErrors); }
             }
         })).ToArray();
@@ -246,7 +246,7 @@ public static class ConcurrencyTests
         cts.Cancel();
         await Task.WhenAll([.. writers, .. readers]);
 
-        Console.WriteLine($"  批量写入 {batchCount} 批（每批 50 × 3 向量）/ 搜索 {searchCount} 次");
+        Console.WriteLine($"  批量写入 {batchCount} 批（每批 50 × 3 向量），搜索 {searchCount} 次");
         Console.WriteLine($"  最终数据量：{db.Items.Count} 条");
         Assert(batchErrors == 0, $"并发 AddRange 零异常（{batchCount} 批）");
         Assert(searchErrors == 0, $"并发多字段 Search 零异常（{searchCount} 次）");

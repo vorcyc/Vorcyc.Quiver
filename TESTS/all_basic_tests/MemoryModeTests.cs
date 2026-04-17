@@ -1,4 +1,4 @@
-using Vorcyc.Quiver;
+﻿using Vorcyc.Quiver;
 using static AllBasicTests.TestHelper;
 
 namespace AllBasicTests;
@@ -30,15 +30,15 @@ public static class MemoryModeTests
         var threw = false;
         try
         {
-            // MemoryMapped 模式未设置 DatabasePath 应抛出异常
+            // VectorStorage = MemoryMapped 未设置 DatabasePath 应抛出异常
             _ = new QuiverDbOptions
             {
-                MemoryMode = MemoryMode.MemoryMapped,
+                VectorStorage = VectorStorageMode.MemoryMapped,
                 DatabasePath = null
             };
             // Validate 是 internal 方法，通过 QuiverDbContext 构造触发
             // 直接构建一个匿名上下文类来触发
-            var db = new MyMmapFaceDb(null!, StorageFormat.Binary);
+            var db = new MyMmapFaceDb(null!);
         }
         catch (Exception)
         {
@@ -51,7 +51,7 @@ public static class MemoryModeTests
         var noThrow = false;
         try
         {
-            _ = new MyFaceDb(null!, StorageFormat.Json);
+            _ = new MyFaceDb(null!);
             noThrow = true;
         }
         catch { }
@@ -71,7 +71,7 @@ public static class MemoryModeTests
         var path = "test_mmap_crud.vdb";
         CleanupMmapFiles(path, "FaceFeature", ["Embedding"]);
 
-        var db = new MyMmapFaceDb(path, StorageFormat.Binary);
+        var db = new MyMmapFaceDb(path);
         var random = new Random(42);
 
         // Add 100 条
@@ -139,7 +139,7 @@ public static class MemoryModeTests
         var query = RandomVector(new Random(777), 128);
 
         // 写入
-        var db = new MyMmapFaceDb(path, StorageFormat.Binary);
+        var db = new MyMmapFaceDb(path);
         for (int i = 0; i < 500; i++)
         {
             db.Faces.Add(new FaceFeature
@@ -157,7 +157,7 @@ public static class MemoryModeTests
 
         // 读取（新 DbContext，新 MmapVectorStore 实例）
         CleanupMmapArenaFiles(path, "FaceFeature", ["Embedding"]); // arena 文件在 Dispose 后可删除
-        var dbRead = new MyMmapFaceDb(path, StorageFormat.Binary);
+        var dbRead = new MyMmapFaceDb(path);
         await dbRead.LoadAsync();
 
         Assert(dbRead.Faces.Count == 500, "Mmap 往返后数量正确：500");
@@ -196,7 +196,7 @@ public static class MemoryModeTests
         CleanupMmapFiles(path, "MultiVectorEntity", ["TextEmbedding", "ImageEmbedding", "AudioEmbedding"]);
 
         var random = new Random(42);
-        var db = new MyMmapMultiVectorDb(path, StorageFormat.Binary);
+        var db = new MyMmapMultiVectorDb(path);
 
         for (int i = 0; i < 300; i++)
         {
@@ -237,7 +237,7 @@ public static class MemoryModeTests
         db.Dispose();
 
         CleanupMmapArenaFiles(path, "MultiVectorEntity", ["TextEmbedding", "ImageEmbedding", "AudioEmbedding"]);
-        var dbRead = new MyMmapMultiVectorDb(path, StorageFormat.Binary);
+        var dbRead = new MyMmapMultiVectorDb(path);
         await dbRead.LoadAsync();
 
         Assert(dbRead.Items.Count == 300, "Mmap 多向量往返后数量正确");
@@ -257,7 +257,7 @@ public static class MemoryModeTests
         var path = "test_mmap_arena.vdb";
         CleanupMmapFiles(path, "FaceFeature", ["Embedding"]);
 
-        var db = new MyMmapFaceDb(path, StorageFormat.Binary);
+        var db = new MyMmapFaceDb(path);
 
         // 构造后即创建 arena 文件（MmapVectorStore 构造函数调用 CreateMapping）
         var arenaPath = $"{path}.FaceFeature.Embedding.vec";
@@ -288,7 +288,7 @@ public static class MemoryModeTests
         var path = "test_mmap_reuse.vdb";
         CleanupMmapFiles(path, "FaceFeature", ["Embedding"]);
 
-        var db = new MyMmapFaceDb(path, StorageFormat.Binary);
+        var db = new MyMmapFaceDb(path);
         var random = new Random(42);
 
         // 添加 50 条
@@ -346,7 +346,7 @@ public static class MemoryModeTests
         var path = "test_mmap_grow.vdb";
         CleanupMmapFiles(path, "FaceFeature", ["Embedding"]);
 
-        var db = new MyMmapFaceDb(path, StorageFormat.Binary);
+        var db = new MyMmapFaceDb(path);
         var random = new Random(42);
 
         // 添加 2000 条，触发至少一次 Grow
@@ -457,8 +457,8 @@ public static class MemoryModeTests
         var mmapPath = "test_mode_mmap.vdb";
         CleanupMmapFiles(mmapPath, "FaceFeature", ["Embedding"]);
 
-        var dbHeap = new MyFaceDb(heapPath, StorageFormat.Binary);
-        var dbMmap = new MyMmapFaceDb(mmapPath, StorageFormat.Binary);
+        var dbHeap = new MyFaceDb(heapPath);
+        var dbMmap = new MyMmapFaceDb(mmapPath);
         var random = new Random(42);
 
         // 写入相同数据

@@ -1,12 +1,12 @@
 ﻿namespace Vorcyc.Quiver;
 
-using System.Text.Json;
-
 /// <summary>
 /// 向量数据库的全局配置选项。
 /// <para>
-/// 通过此类可以控制数据库的存储路径、默认距离度量方式、持久化格式以及 JSON 序列化行为。
+/// 通过此类可以控制数据库的存储路径、默认距离度量方式和各项功能开关。
 /// 在创建 <see cref="QuiverDbContext"/> 时传入。
+/// 数据库始终使用紧凑二进制格式（QDB v3）持久化，若需要可读格式请使用
+/// <see cref="QuiverDbContext.ExportAsync"/> 导出为 JSON 或 XML。
 /// </para>
 /// <example>
 /// 典型用法：
@@ -15,7 +15,6 @@ using System.Text.Json;
 /// {
 ///     DatabasePath = @"C:\Data\MyVectorDb",
 ///     DefaultMetric = DistanceMetric.Cosine,
-///     StorageFormat = StorageFormat.Binary,
 ///     EnableWal = true
 /// };
 /// </code>
@@ -23,7 +22,6 @@ using System.Text.Json;
 /// </summary>
 /// <seealso cref="QuiverDbContext"/>
 /// <seealso cref="DistanceMetric"/>
-/// <seealso cref="StorageFormat"/>
 public class QuiverDbOptions
 {
     /// <summary>
@@ -47,49 +45,19 @@ public class QuiverDbOptions
     public DistanceMetric DefaultMetric { get; set; } = DistanceMetric.Cosine;
 
     /// <summary>
-    /// 数据的持久化存储格式。
-    /// <para>
-    /// 决定向量数据以何种格式写入磁盘。
-    /// <list type="bullet">
-    ///   <item><see cref="StorageFormat.Json"/>：可读性好，适合开发调试。</item>
-    ///   <item><see cref="StorageFormat.Xml"/>：可读性好，向量使用 Base64 编码。</item>
-    ///   <item><see cref="StorageFormat.Binary"/>：体积最小、性能最优，适合生产环境。</item>
-    /// </list>
-    /// </para>
-    /// </summary>
-    /// <value>默认为 <see cref="StorageFormat.Json"/>。</value>
-    public StorageFormat StorageFormat { get; set; } = StorageFormat.Json;
-
-    /// <summary>
-    /// 向量索引的运行时内存管理模式。
+    /// 向量数据（<c>float[]</c>）的物理存储介质。
     /// <para>
     /// <list type="bullet">
-    ///   <item><see cref="MemoryMode.FullMemory"/>（默认）：向量以 <c>float[]</c> 驻留在 GC 托管堆，搜索延迟最低。</item>
-    ///   <item><see cref="MemoryMode.MemoryMapped"/>：向量存储在 OS 管理的内存映射区域，零 GC 压力，
-    ///   物理内存按需换入，可处理超出物理内存的数据集。
+    ///   <item><see cref="VectorStorageMode.Heap"/>（默认）：向量以 <c>float[]</c> 驻留在 GC 托管堆，访问延迟最低。</item>
+    ///   <item><see cref="VectorStorageMode.MemoryMapped"/>：向量存储在 OS 管理的内存映射 arena 文件中，
+    ///   零 GC 压力，物理内存按需换入，可处理超出物理内存的数据集。
     ///   要求设置 <see cref="DatabasePath"/>。</item>
     /// </list>
     /// </para>
+    /// <para>与 <see cref="EntityCache"/> 完全正交，可任意组合。</para>
     /// </summary>
-    /// <value>默认为 <see cref="MemoryMode.FullMemory"/>。</value>
-    public MemoryMode MemoryMode { get; set; } = MemoryMode.FullMemory;
-
-    /// <summary>
-    /// 当 <see cref="StorageFormat"/> 为 <see cref="StorageFormat.Json"/> 时使用的序列化选项。
-    /// <para>
-    /// 默认启用缩进输出（<see cref="JsonSerializerOptions.WriteIndented"/> = <see langword="true"/>）
-    /// 并使用驼峰命名策略（<see cref="JsonNamingPolicy.CamelCase"/>），
-    /// 以生成更易读且符合前端惯例的 JSON 文件。
-    /// </para>
-    /// </summary>
-    /// <value>预配置的 <see cref="JsonSerializerOptions"/> 实例。</value>
-    public JsonSerializerOptions JsonOptions { get; set; } = new()
-    {
-        // 启用缩进格式，提升 JSON 文件可读性
-        WriteIndented = true,
-        // 使用驼峰命名（camelCase），与 JavaScript/前端生态保持一致
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
+    /// <value>默认为 <see cref="VectorStorageMode.Heap"/>。</value>
+    public VectorStorageMode VectorStorage { get; set; } = VectorStorageMode.Heap;
 
     // ── WAL（Write-Ahead Log）增量持久化配置 ──
 
@@ -128,17 +96,61 @@ public class QuiverDbOptions
     /// <value>默认为 <see langword="true"/>（最强持久性）。</value>
     public bool WalFlushToDisk { get; set; } = true;
 
+    // ── 实体缓存策略配置 ──
+
+    /// <summary>
+    /// 实体对象（<c>TEntity</c>）的内存缓存策略。
+    /// <para>
+    /// <list type="bullet">
+    ///   <item><see cref="EntityCacheMode.FullMemory"/>（默认）：所有实体常驻内存字典，访问延迟最低，与旧版行为一致。</item>
+    ///   <item><see cref="EntityCacheMode.LazyPaging"/>：实体按页按需加载，LRU 策略淘汰冷页，内存上限可控。
+    ///   适用于实体对象本身占用内存较大或数据集超大（百万级）的场景。
+    ///   要求设置 <see cref="DatabasePath"/>。</item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// <b>注意</b>：向量索引结构（HNSW/IVF 等）不受此设置影响，始终常驻内存以保证搜索性能。
+    /// </para>
+    /// <para>与 <see cref="VectorStorage"/> 完全正交，可任意组合。</para>
+    /// </summary>
+    /// <value>默认为 <see cref="EntityCacheMode.FullMemory"/>。</value>
+    public EntityCacheMode EntityCache { get; set; } = EntityCacheMode.FullMemory;
+
+    /// <summary>
+    /// 懒加载模式下，每个 <see cref="QuiverSet{TEntity}"/> 在内存中最多保留的页数。
+    /// 超出时使用 LRU 策略淘汰最久未使用的冷页（脏页先写回磁盘）。
+    /// <para>
+    /// 实际内存占用上限约为：<c>MaxCachedPages × PageSize × 单实体内存大小</c>。
+    /// </para>
+    /// </summary>
+    /// <value>默认为 16 页。</value>
+    public int MaxCachedPages { get; set; } = 16;
+
+    /// <summary>
+    /// 懒加载模式下每个分页最多容纳的实体数量。
+    /// 页越大则加载粒度越粗（单次 I/O 读取更多数据），页越小则内存更精细可控。
+    /// 推荐范围：128 ~ 2048。
+    /// </summary>
+    /// <value>默认为 512 条实体/页。</value>
+    public int PageSize { get; set; } = 512;
+
     /// <summary>
     /// 验证选项组合的合法性。在 <see cref="QuiverDbContext"/> 构造时调用。
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// <see cref="MemoryMode"/> 为 <see cref="MemoryMode.MemoryMapped"/> 但未设置 <see cref="DatabasePath"/> 时抛出。
+    /// <see cref="VectorStorage"/> 为 <see cref="VectorStorageMode.MemoryMapped"/> 但未设置 <see cref="DatabasePath"/> 时抛出，
+    /// 或 <see cref="EntityCache"/> 为 <see cref="EntityCacheMode.LazyPaging"/> 但未设置 <see cref="DatabasePath"/> 时抛出。
     /// </exception>
     internal void Validate()
     {
-        if (MemoryMode == MemoryMode.MemoryMapped && string.IsNullOrEmpty(DatabasePath))
+        if (VectorStorage == VectorStorageMode.MemoryMapped && string.IsNullOrEmpty(DatabasePath))
             throw new InvalidOperationException(
-                $"{nameof(MemoryMode)}.{nameof(MemoryMode.MemoryMapped)} requires a valid {nameof(DatabasePath)} " +
+                $"{nameof(VectorStorage)}.{nameof(VectorStorageMode.MemoryMapped)} requires a valid {nameof(DatabasePath)} " +
                 $"for the vector arena file.");
+
+        if (EntityCache == EntityCacheMode.LazyPaging && string.IsNullOrEmpty(DatabasePath))
+            throw new InvalidOperationException(
+                $"{nameof(EntityCache)}.{nameof(EntityCacheMode.LazyPaging)} requires a valid {nameof(DatabasePath)} " +
+                $"for the page cache directory.");
     }
 }

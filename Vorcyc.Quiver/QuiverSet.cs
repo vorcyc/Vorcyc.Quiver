@@ -5,6 +5,7 @@ using System.Linq.Expressions;
 using System.Numerics.Tensors;
 using System.Reflection;
 using Vorcyc.Quiver.Indexing;
+using Vorcyc.Quiver.Paging;
 using Vorcyc.Quiver.Similarity;
 
 namespace Vorcyc.Quiver;
@@ -79,8 +80,11 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     // 存储层：内部 ID → 实体 的双向映射，内部 ID 由 _nextId 自增分配
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>内部 ID → 实体 的映射，用于搜索结果的 ID 反查。</summary>
-    private readonly Dictionary<int, TEntity> _entities = [];
+    /// <summary>
+    /// 实体缓存。FullMemory 模式下为直通字典，LazyLoading 模式下为 LRU 分页缓存。
+    /// 对外提供与 <c>Dictionary&lt;int, TEntity&gt;</c> 相同的访问接口。
+    /// </summary>
+    private readonly EntityPageCache<TEntity> _entities;
 
     /// <summary>用户主键 → 内部 ID 的映射，支持 O(1) 的主键去重和查找。</summary>
     private readonly Dictionary<object, int> _keyToId = [];
@@ -139,19 +143,23 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     /// 默认距离度量。当前未使用（度量从 <see cref="QuiverVectorAttribute.Metric"/> 读取），
     /// 保留用于未来扩展。
     /// </param>
-    /// <param name="memoryMode">
-    /// 内存管理模式。决定向量数据的物理存储位置（GC 堆 / 内存映射区域）。
+    /// <param name="vectorStorage">
+    /// 向量数据的物理存储介质（GC 堆 / 内存映射 arena 文件）。
     /// </param>
     /// <param name="databasePath">
-    /// 数据库路径。<see cref="MemoryMode.MemoryMapped"/> 模式下用于派生 arena 文件路径。
+    /// 数据库路径。<see cref="VectorStorageMode.MemoryMapped"/> 模式下用于派生 arena 文件路径，
+    /// <see cref="EntityCacheMode.LazyPaging"/> 模式下用于派生页文件目录。
     /// </param>
     /// <exception cref="InvalidOperationException">
     /// 实体类型缺少 <see cref="QuiverKeyAttribute"/> 主键，或没有任何 <see cref="QuiverVectorAttribute"/> 向量字段。
     /// </exception>
     internal QuiverSet(
         DistanceMetric defaultMetric = DistanceMetric.Cosine,
-        MemoryMode memoryMode = MemoryMode.FullMemory,
-        string? databasePath = null)
+        VectorStorageMode vectorStorage = VectorStorageMode.Heap,
+        string? databasePath = null,
+        EntityCacheMode entityCache = EntityCacheMode.FullMemory,
+        int maxCachedPages = 16,
+        int pageSize = 512)
     {
         var type = typeof(TEntity);
 
@@ -188,7 +196,7 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             vectorGetters[prop.Name] = CompileGetter<float[]?>(prop);
 
             // ── 为每个向量字段创建对应的 IVectorStore ──
-            var store = CreateVectorStore(memoryMode, databasePath, type.Name, prop.Name, vectorAttr.Dimensions);
+            var store = CreateVectorStore(vectorStorage, databasePath, type.Name, prop.Name, vectorAttr.Dimensions);
             vectorStores[prop.Name] = store;
 
             // ── 创建对应的向量索引实例（通过泛型辅助方法消除度量×索引的笛卡尔积）──
@@ -228,6 +236,17 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             var first = _vectorFields.First();
             _defaultField = (first.Key, first.Value);
         }
+
+        // ── 初始化实体缓存（FullMemory 或 LazyPaging）──
+        if (entityCache == EntityCacheMode.LazyPaging && !string.IsNullOrEmpty(databasePath))
+        {
+            var pageDir = Path.Combine(databasePath + ".pages", typeof(TEntity).Name);
+            _entities = new EntityPageCache<TEntity>(pageDir, maxCachedPages, pageSize);
+        }
+        else
+        {
+            _entities = new EntityPageCache<TEntity>();
+        }
     }
 
     /// <summary>当前存储的实体数量。线程安全（读锁）。</summary>
@@ -241,6 +260,9 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             finally { _lock.ExitReadLock(); }
         }
     }
+
+    /// <summary>是否处于懒加载分页缓存模式。</summary>
+    public bool IsLazyLoading => _entities.IsLazy;
 
     /// <summary>
     /// 所有向量字段名称与维度的只读映射。
@@ -374,11 +396,11 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     /// 根据内存模式创建对应的向量存储实例。
     /// </summary>
     private static IVectorStore CreateVectorStore(
-        MemoryMode mode, string? databasePath, string typeName, string fieldName, int dimensions)
+        VectorStorageMode mode, string? databasePath, string typeName, string fieldName, int dimensions)
     {
         return mode switch
         {
-            MemoryMode.MemoryMapped => new MmapVectorStore(
+            VectorStorageMode.MemoryMapped => new MmapVectorStore(
                 $"{databasePath}.{typeName}.{fieldName}.vec", dimensions),
             _ => new HeapVectorStore()
         };
@@ -432,6 +454,9 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+
+        // 懒加载模式：刷新所有脏页到磁盘
+        _entities.Dispose();
 
         foreach (var store in _vectorStores.Values)
             store.Dispose();

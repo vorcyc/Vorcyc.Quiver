@@ -15,13 +15,12 @@ using System.Text.Json.Nodes;
 /// </para>
 /// </summary>
 /// <param name="jsonOptions">
-/// JSON 序列化选项，由 <see cref="QuiverDbOptions.JsonOptions"/> 传入，
-/// 控制输出格式（缩进、命名策略等）。
+/// JSON 序列化选项，控制输出格式（缩进、命名策略等）。
+/// 可通过 <see cref="ExportStorageProviderFactory.DefaultJsonOptions"/> 获取默认值。
 /// </param>
 /// <seealso cref="IStorageProvider"/>
-/// <seealso cref="StorageFormat.Json"/>
-/// <seealso cref="QuiverDbOptions.JsonOptions"/>
-internal class JsonStorageProvider(JsonSerializerOptions jsonOptions) : IStorageProvider
+/// <seealso cref="ExportFormat.Json"/>
+internal class JsonExportProvider(JsonSerializerOptions jsonOptions) : IStorageProvider
 {
     /// <summary>
     /// 将所有向量集合以 JSON 格式异步持久化到指定文件。

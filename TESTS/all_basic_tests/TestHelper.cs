@@ -3,7 +3,7 @@ using Vorcyc.Quiver;
 namespace AllBasicTests;
 
 /// <summary>
-/// 共享测试基础设施：断言、随机向量生成、格式数组、计数器。
+/// 共享测试基础设施：断言、随机向量生成、导出格式数组、计数器。
 /// </summary>
 public static class TestHelper
 {
@@ -13,8 +13,9 @@ public static class TestHelper
     public static int Passed => _passed;
     public static int Failed => _failed;
 
-    public static readonly StorageFormat[] Formats = [StorageFormat.Json, StorageFormat.Xml, StorageFormat.Binary];
-    public static readonly string[] Extensions = [".json", ".xml", ".vdb"];
+    /// <summary>导出格式（用于 Export/Import 测试）。</summary>
+    public static readonly ExportFormat[] ExportFormats = [ExportFormat.Json, ExportFormat.Xml];
+    public static readonly string[] ExportExtensions = [".json", ".xml"];
 
     public static void Assert(bool condition, string testName)
     {

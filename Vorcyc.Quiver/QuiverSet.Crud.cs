@@ -56,7 +56,7 @@ public partial class QuiverSet<TEntity>
             for (var idx = 0; idx < entityList.Count; idx++)
             {
                 var id = _nextId++;
-                _entities[id] = entityList[idx];
+                _entities.Set(id, entityList[idx]);
                 _keyToId[batch[idx].Key] = id;
 
                 foreach (var (name, vector) in batch[idx].Vectors)
@@ -174,6 +174,10 @@ public partial class QuiverSet<TEntity>
     /// <para>
     /// 复杂度 O(n)（最坏情况）。如果仅按主键判断，请使用 <see cref="Exists(object)"/> 重载（O(1)）。
     /// </para>
+    /// <para>
+    /// <b>注意</b>：LazyPaging 模式下，迭代 <see cref="Values"/> 会触发冷页换入（磁盘 I/O），
+    /// 整个迭代过程持有读锁，并发写操作会被阻塞直到返回。
+    /// </para>
     /// </summary>
     /// <param name="predicate">条件谓词。</param>
     /// <returns>存在至少一个满足条件的实体返回 <c>true</c>；否则返回 <c>false</c>。</returns>
@@ -210,6 +214,8 @@ public partial class QuiverSet<TEntity>
             foreach (var store in _vectorStores.Values)
                 store.Clear();
 
+            // 清空 Clear 之前的所有待持久化变更（它们已被此次清空操作覆盖），再追加一条 Clear 记录
+            _changeLog.Clear();
             _changeLog.Add((3, null, null)); // Op=3: Clear
         }
         finally { _lock.ExitWriteLock(); }
@@ -233,7 +239,7 @@ public partial class QuiverSet<TEntity>
         var prepared = PrepareVectors(entity);
 
         var id = _nextId++;
-        _entities[id] = entity;
+        _entities.Set(id, entity);
         _keyToId[key] = id;
 
         foreach (var (name, indexVector) in prepared)

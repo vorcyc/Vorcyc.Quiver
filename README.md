@@ -1,12 +1,12 @@
-﻿# Vorcyc Quiver 2.0.0 Technical Documentation
+﻿# Vorcyc Quiver 3.0.0 Technical Documentation
 
-![Vorcyc Quiver 2.0.0](logo.jpg "Vorcyc Quiver 2.0.0")
+![Vorcyc Quiver 3.0.0](logo.jpg "Vorcyc Quiver 3.0.0")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
 > **Namespace**: `Vorcyc.Quiver`  
 > **Design Philosophy**: Similar to EF Core's `DbContext` pattern, achieving automatic discovery, index construction, and persistence of the vector database through declarative attribute annotations  
-> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · 9 built-in distance metrics + custom similarity support · Multiple persistence formats (JSON / XML / Binary) · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation · Memory-mapped vector storage  
+> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · 9 built-in distance metrics + custom similarity support · Binary primary storage + JSON/XML export/import · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation · Memory-mapped vector storage · **Lazy-loading page cache (LRU, on-demand entity loading)**
 > **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery` `Schema Migration` `ISimilarity` `Custom Metric` `Memory-Mapped` `MemoryMappedFile`  
 > **Name Origin**: Quiver — a container for arrows (Arrow), and the mathematical essence of a vector is an arrow
 
@@ -22,6 +22,59 @@ While reflecting on these pain points, EF Core's design philosophy provided key 
 Meanwhile, the Python library Annoy (Approximate Nearest Neighbors Oh Yeah) also provided inspiration, but its .NET wrapper HNSWSharp did not support a structured database-like design and only offered a single HNSW index type, lacking flexibility and diversity.
 
 Therefore, I decided to design a brand-new vector database framework that would maintain EF Core-style ease of use and declarative modeling, support multiple ANN index algorithms to accommodate scenarios with different scales and performance requirements, and also include built-in concurrency safety mechanisms and efficient persistence solutions.
+
+---
+
+### What's New in 3.0.0
+
+> **File Format Compatibility**: v3.0.0 is fully backward-compatible with v1.x and v2.x data files. All three storage formats (JSON / XML / Binary), WAL files, and existing `MemoryMapped` arena files can be loaded without any migration.
+
+#### New Features
+
+| Feature | Description |
+|---------|-------------|
+| **Lazy-loading page cache** | `EntityCache = EntityCacheMode.LazyPaging` — entity objects are no longer fully resident in memory. They are split into fixed-size pages (`PageSize` entities/page), loaded on demand, and evicted via LRU when `MaxCachedPages` is exceeded. Idle cold pages are serialized to binary `.qvpg` page files and read back only when accessed. |
+| **Controllable memory ceiling** | Actual entity memory usage is bounded by `MaxCachedPages × PageSize × entity size` regardless of total dataset size. |
+| **Vector indexes remain resident** | HNSW / IVF / KDTree index structures always stay in memory, so search performance is unaffected by lazy-loading. |
+| **`IsLazyLoading` property** | `QuiverSet<T>.IsLazyLoading` exposes the current caching mode for diagnostics. |
+| **Transparent API** | `EntityPageCache<T>` presents the same interface as the previous `Dictionary<int, TEntity>` — zero changes required in calling code. |
+
+#### New Configuration Options (`QuiverDbOptions`)
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `EntityCache` | `EntityCacheMode` | `FullMemory` | Entity caching mode: `FullMemory` (all entities in memory) / `LazyPaging` (LRU page cache). Requires `DatabasePath` for `LazyPaging`. |
+| `MaxCachedPages` | `int` | `16` | Max pages kept in memory per `QuiverSet`. |
+| `PageSize` | `int` | `512` | Max entities per page. |
+
+#### Quick Start — Lazy-Loading Mode
+
+```csharp
+var options = new QuiverDbOptions
+{
+    DatabasePath = "mydata.vdb",
+    EntityCache = EntityCacheMode.LazyPaging,  // ← enable lazy paging
+    MaxCachedPages = 32,                       // at most 32 pages in memory
+    PageSize = 512                             // 512 entities per page
+    // memory ceiling ≈ 32 × 512 × entity size
+};
+```
+
+> Page files are stored under `{DatabasePath}.pages/{EntityTypeName}/page_XXXXXXXX.qvpg` (custom binary format, no external dependencies).
+>
+> **Page file binary layout (v1)**:
+> ```
+> [4B uint32]  Magic = 0x51565047  ("QVPG" identifier)
+> [1B byte]    Version = 0x01
+> [4B int32]   PropCount            ← number of property descriptors
+> PropDescriptor × PropCount:
+>   [string]   PropName             ← BinaryWriter length-prefixed UTF-8
+> [4B int32]   EntityCount          ← entities in this page
+> Entity × EntityCount:
+>   [4B int32] InternalId
+>   per-field (descriptor order): [1B bool isNotNull] + value
+>                                 (same type encoding as BinaryStorageProvider)
+> ```
 
 ---
 
@@ -42,7 +95,7 @@ Therefore, I decided to design a brand-new vector database framework that would 
 |---------|-------------|
 | **6 new distance metrics** | Manhattan (L1), Chebyshev (L∞), Pearson correlation, Hamming, Jaccard, Canberra — plus the original 3 (Cosine / Euclidean / DotProduct), totaling 9 built-in metrics |
 | **Custom similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySimilarity))]` — plug in any `ISimilarity<float>` struct |
-| **Memory-mapped vector storage** | `MemoryMode.MemoryMapped` — vectors in OS-managed mmap arena, zero GC pressure, handles datasets exceeding physical memory |
+| **Memory-mapped vector storage** | `VectorStorage = VectorStorageMode.MemoryMapped` — vectors in OS-managed mmap arena, zero GC pressure, handles datasets exceeding physical memory |
 | **IVectorStore abstraction** | `HeapVectorStore` (GC heap, default) and `MmapVectorStore` (mmap file) — pluggable vector storage backends |
 
 #### Performance Improvements
@@ -62,11 +115,11 @@ Therefore, I decided to design a brand-new vector database framework that would 
 
 - **Code-First Declarative Modeling** — Like EF Core, annotate entity classes with attributes, and the framework automatically discovers and registers `QuiverSet<T>` collections via reflection — zero configuration required.
 - **Multiple ANN Index Algorithms** — Built-in Flat (brute-force search), HNSW (Hierarchical Navigable Small World graph), IVF (Inverted File Index), and KDTree indexes, covering the full range from small-scale exact search to million-scale approximate search.
-- **Flexible Persistence Options** — Supports JSON (human-readable for debugging), XML (compatibility), and Binary (high-performance production) storage formats, plus a WAL (Write-Ahead Log) incremental persistence mechanism that reduces persistence complexity from O(N) to O(delta) in high-frequency write scenarios.
+- **Binary-First Persistence** — Primary storage always uses the high-performance Binary format. JSON and XML are available as export/import side channels (`ExportAsync` / `ImportAsync`) for human-readable backups and interoperability. WAL (Write-Ahead Log) incremental persistence reduces save complexity from O(N) to O(Δ) in high-frequency write scenarios.
 - **Out-of-the-box Concurrency Safety** — `QuiverSet<T>` internally implements reader-writer separation locks via `ReaderWriterLockSlim`, making concurrent multi-threaded searching and writing inherently safe without external locking.
 - **9 Distance Metrics + Custom Similarity** — Built-in Cosine, Euclidean, DotProduct, Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra. Also supports user-defined `ISimilarity<float>` implementations via `CustomSimilarity` attribute.
 - **SIMD Hardware Acceleration** — All similarity implementations leverage `TensorPrimitives` and `Vector<float>` SIMD instructions, auto-adapting to SSE4 / AVX2 / AVX-512 register widths.
-- **Memory-Mapped Vector Storage** — Optional `MemoryMode.MemoryMapped` stores vectors in OS-managed arena files, zero GC pressure, enabling datasets exceeding physical memory.
+- **Memory-Mapped Vector Storage** — Optional `VectorStorage = VectorStorageMode.MemoryMapped` stores vectors in OS-managed arena files, zero GC pressure, enabling datasets exceeding physical memory.
 - **Schema Migration** — Supports property renaming and value transformation during loading via `ConfigureMigration<T>()`. Adding or removing fields requires no configuration — new fields get default values, removed fields are silently skipped.
 
 **Typical Use Cases**: Semantic search, RAG (Retrieval-Augmented Generation), face recognition, image-to-image search, recommendation systems, multimodal retrieval, etc.
@@ -138,10 +191,10 @@ graph TB
     end
 
     subgraph Storage Layer
-        ISP["IStorageProvider Interface"]
-        JSON["JsonStorageProvider<br/>System.Text.Json<br/>Readable, for debugging"]
-        XML["XmlStorageProvider<br/>XDocument + Base64<br/>Compatibility"]
-        BIN["BinaryStorageProvider<br/>Custom protocol + MemoryMarshal<br/>Smallest size, zero-copy"]
+        BSP["BinaryStorageProvider<br/>Custom protocol + MemoryMarshal<br/>Primary storage, zero-copy"]
+        ISP["IStorageProvider Interface<br/>Export/Import only"]
+        JSON["JsonExportProvider<br/>System.Text.Json<br/>Export/Import format"]
+        XML["XmlExportProvider<br/>XDocument + Base64<br/>Export/Import format"]
     end
 
     subgraph WAL Layer Write-Ahead Log
@@ -157,10 +210,10 @@ graph TB
     IVI --> HNSW
     IVI --> IVF
     IVI --> KDT
+    VDC --> BSP
     VDC --> ISP
     ISP --> JSON
     ISP --> XML
-    ISP --> BIN
     VDC --> WAL
     WAL --> WE
 ```
@@ -172,8 +225,8 @@ graph TB
 | `QuiverDbContext` | `abstract class` | Database context base class, manages automatic reflection discovery of QuiverSet collections, persistence read/write, lifecycle |
 | `QuiverSet<TEntity>` | `partial class` | Vector collection, implements `IEnumerable<TEntity>`, provides full CRUD + multiple search modes + `foreach` / LINQ enumeration, internal `ReaderWriterLockSlim` reader-writer lock |
 | `IVectorIndex` | `internal interface` | Unified vector index contract, defines `Add` / `Remove` / `Clear` / `Search` / `SearchByThreshold` |
-| `IStorageProvider` | `internal interface` | Unified persistence contract, supports `SaveAsync` / `LoadAsync` |
-| `StorageProviderFactory` | `internal static class` | Factory method, creates corresponding `IStorageProvider` instance based on `StorageFormat` enum |
+| `IStorageProvider` | `internal interface` | Export/import serialization contract, supports `SaveAsync` / `LoadAsync`. Used only by `ExportAsync` / `ImportAsync` — primary storage always uses `BinaryStorageProvider` directly |
+| `ExportStorageProviderFactory` | `internal static class` | Factory method, creates `JsonExportProvider` or `XmlExportProvider` based on `ExportFormat` enum |
 | `QuiverVectorAttribute` | `Attribute` | Marks vector field, specifies dimensions (`dimensions`), distance metric (`metric`), and nullable (`Optional`) |
 | `QuiverKeyAttribute` | `Attribute` | Marks entity primary key (exactly one per entity) |
 | `QuiverIndexAttribute` | `Attribute` | Configures index type and tuning parameters (optional, defaults to Flat) |
@@ -301,9 +354,8 @@ classDiagram
     class QuiverDbOptions {
         +string? DatabasePath
         +DistanceMetric DefaultMetric
-        +StorageFormat StorageFormat
-        +MemoryMode MemoryMode
-        +JsonSerializerOptions JsonOptions
+        +VectorStorageMode VectorStorage
+        +EntityCacheMode EntityCache
         +bool EnableWal
         +int WalCompactionThreshold
         +bool WalFlushToDisk
@@ -346,9 +398,8 @@ classDiagram
     IVectorIndex <|.. HnswIndex
     IVectorIndex <|.. IvfIndex
     IVectorIndex <|.. KDTreeIndex
-    IStorageProvider <|.. JsonStorageProvider
-    IStorageProvider <|.. XmlStorageProvider
-    IStorageProvider <|.. BinaryStorageProvider
+    IStorageProvider <|.. JsonExportProvider
+    IStorageProvider <|.. XmlExportProvider
     QuiverSet~TEntity~ ..> QuiverSearchResult~TEntity~ : returns
 ```
 
@@ -384,8 +435,7 @@ public class MyDocumentDb : QuiverDbContext
 
     public MyDocumentDb() : base(new QuiverDbOptions
     {
-        DatabasePath = "documents.json",
-        StorageFormat = StorageFormat.Json,
+        DatabasePath = "documents.vdb",   // binary .vdb file
         DefaultMetric = DistanceMetric.Cosine
     })
     { }
@@ -437,7 +487,6 @@ public class MyWalDb : QuiverDbContext
     public MyWalDb() : base(new QuiverDbOptions
     {
         DatabasePath = "documents.vdb",
-        StorageFormat = StorageFormat.Binary,
         EnableWal = true,              // Enable WAL
         WalCompactionThreshold = 10_000, // Auto-compact when WAL exceeds 10K records
         WalFlushToDisk = true            // fsync to guarantee durability
@@ -1511,7 +1560,7 @@ var top1 = await db.Documents.SearchTop1Async(queryVector);
 await db.SaveAsync();
 
 // Save to a specified path (overrides DatabasePath)
-await db.SaveAsync(@"C:\backup\mydata.json");
+await db.SaveAsync(@"C:\backup\mydata.vdb");
 
 // WAL incremental save — only append changes to WAL file, O(Δ) complexity
 await db.SaveChangesAsync();
@@ -1524,7 +1573,7 @@ await db.CompactAsync();
 await db.LoadAsync();
 
 // Load from a specified path
-await db.LoadAsync(@"C:\backup\mydata.json");
+await db.LoadAsync(@"C:\backup\mydata.vdb");
 ```
 
 #### Persistence Internal Flow
@@ -1576,17 +1625,27 @@ sequenceDiagram
     end
 ```
 
-### 8.2 Storage Format Comparison
+### 8.2 Storage Architecture
 
-| Format | Implementation | Readability | File Size | Read/Write Speed | Use Case |
-|--------|---------------|-------------|-----------|-----------------|----------|
-| `Json` | `JsonStorageProvider` | ✅ Excellent | Largest | Average | Development & debugging |
-| `Xml` | `XmlStorageProvider` | ✅ Good | Large | Average | Compatibility requirements |
-| `Binary` | `BinaryStorageProvider` | ❌ Not readable | **Smallest** | **Fastest** | Production environments |
+Quiver uses a **binary-first** storage model:
 
-### 8.3 JSON Format Details
+| Role | Implementation | Description |
+|------|---------------|-------------|
+| **Primary storage** | `BinaryStorageProvider` | Always used for `SaveAsync` / `LoadAsync`. Smallest size, fastest I/O, zero-copy via `MemoryMarshal` |
+| **Export / Import** | `JsonExportProvider` | Human-readable JSON, useful for debugging and interoperability. Accessed via `ExportAsync` / `ImportAsync` |
+| **Export / Import** | `XmlExportProvider` | XML with Base64 vectors, useful for compatibility. Accessed via `ExportAsync` / `ImportAsync` |
 
-Uses `System.Text.Json` for serialization. Output structure:
+```csharp
+// Export to JSON for inspection
+await db.ExportAsync("backup.json", ExportFormat.Json);
+
+// Import back
+await db.ImportAsync("backup.json", ExportFormat.Json);
+```
+
+### 8.3 JSON Export Format Details
+
+Used only for export/import via `ExportAsync` / `ImportAsync`. Output structure:
 
 ```json
 {
@@ -1597,14 +1656,14 @@ Uses `System.Text.Json` for serialization. Output structure:
 }
 ```
 
-- Supports customizing indentation and naming policy via `QuiverDbOptions.JsonOptions`
+- JSON options (`WriteIndented`, naming policy) are passed directly to `ExportAsync`
 - Defaults to `WriteIndented = true` + `CamelCase`
-- Uses `JsonDocument` DOM parsing during loading, deserializing element by element
+- Uses `JsonDocument` DOM parsing during import, deserializing element by element
 - Unrecognized type names are automatically skipped (forward compatible)
 
-### 8.4 XML Format Details
+### 8.4 XML Export Format Details
 
-Uses `System.Xml.Linq` (`XDocument`). Output structure:
+Used only for export/import via `ExportAsync` / `ImportAsync`. Output structure:
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -1623,13 +1682,13 @@ Uses `System.Xml.Linq` (`XDocument`). Output structure:
 - DateTime uses **ISO 8601 round-trip format** (`"O"`)
 - Numeric values use `CultureInfo.InvariantCulture`, ensuring cross-region consistency
 
-### 8.5 Binary Format Details
+### 8.5 Binary Format Details (Primary Storage)
 
 Custom compact binary protocol with optimal performance:
 
 ```
 ┌─ File Header ─────────────────────────────────────────────
-│  Magic: "QDB\x01" (4B)              ← File identifier + version
+│  Magic: "QDB\x03" (4B)              ← File identifier + version (v1/v2 files accepted)
 │  SetCount (int32)                    ← Number of vector collections
 ├─ Set × SetCount ──────────────────────────────────────────
 │  TypeName (string)                   ← BinaryWriter length-prefixed
@@ -2190,25 +2249,16 @@ var options = new QuiverDbOptions
 {
     // Database file path. null for in-memory mode (no persistence)
     // Directory is auto-created by storage provider if it doesn't exist
-    DatabasePath = @"C:\Data\MyQuiverDb.json",
+    DatabasePath = @"C:\Data\MyQuiverDb.vdb",
 
     // Default distance metric (entity-level [QuiverVector] attribute can override)
     DefaultMetric = DistanceMetric.Cosine,
 
-    // Persistence storage format
-    StorageFormat = StorageFormat.Json,
+    // Vector storage mode: Heap (GC heap, lowest latency) or MemoryMapped (OS mmap arena, zero GC)
+    VectorStorage = VectorStorageMode.Heap,
 
-    // Vector storage memory mode
-    // FullMemory: vectors on GC heap (lowest latency)
-    // MemoryMapped: vectors in OS mmap arena (zero GC pressure, handles datasets > physical RAM)
-    MemoryMode = MemoryMode.FullMemory,
-
-    // JSON serialization options (only used when StorageFormat.Json)
-    JsonOptions = new JsonSerializerOptions
-    {
-        WriteIndented = true,                           // Indented output
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase  // Camel case naming
-    },
+    // Entity caching mode: FullMemory (all in memory) or LazyPaging (LRU page cache)
+    EntityCache = EntityCacheMode.FullMemory,
 
     // ── WAL Incremental Persistence Configuration ──
 
@@ -2228,12 +2278,13 @@ var options = new QuiverDbOptions
 |----------|------|---------|-------------|
 | `DatabasePath` | `string?` | `null` | Storage path, `null` for in-memory mode (`SaveAsync` requires explicit `path`) |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | Default distance metric |
-| `StorageFormat` | `StorageFormat` | `Json` | Persistence format: `Json` / `Xml` / `Binary` |
-| `MemoryMode` | `MemoryMode` | `FullMemory` | Vector storage mode: `FullMemory` (GC heap) / `MemoryMapped` (mmap arena, zero GC) |
-| `JsonOptions` | `JsonSerializerOptions` | Indented + CamelCase | JSON serialization options |
+| `VectorStorage` | `VectorStorageMode` | `Heap` | Vector storage mode: `Heap` (GC heap) / `MemoryMapped` (mmap arena, zero GC) |
+| `EntityCache` | `EntityCacheMode` | `FullMemory` | Entity caching mode: `FullMemory` (all in memory) / `LazyPaging` (LRU page cache, requires `DatabasePath`) |
 | `EnableWal` | `bool` | `false` | Whether to enable WAL incremental persistence |
 | `WalCompactionThreshold` | `int` | `10,000` | Auto-compact when WAL record count reaches this value |
 | `WalFlushToDisk` | `bool` | `true` | Whether to fsync to disk after WAL write |
+| `MaxCachedPages` | `int` | `16` | Max pages kept in memory per `QuiverSet` (LazyPaging mode) |
+| `PageSize` | `int` | `512` | Max entities per page (LazyPaging mode) |
 
 ---
 
@@ -2336,18 +2387,22 @@ Uses split hyperplane distance for pruning during search:
 - For the other side: explore only when the heap is not full **or** `|diff| < current search radius`
 - Can skip large numbers of subtrees in low dimensions; pruning fails in high dimensions
 
-### 14.6 StorageProviderFactory
+### 14.6 ExportStorageProviderFactory
 
-Simple factory pattern, invoked during `QuiverDbContext` construction:
+Simple factory pattern, invoked only during `ExportAsync` / `ImportAsync`. Primary storage always uses `BinaryStorageProvider` directly:
 
 ```csharp
-internal static IStorageProvider Create(QuiverDbOptions options) => options.StorageFormat switch
-{
-    StorageFormat.Json   => new JsonStorageProvider(options.JsonOptions),
-    StorageFormat.Xml    => new XmlStorageProvider(),
-    StorageFormat.Binary => new BinaryStorageProvider(),
-    _ => throw new ArgumentOutOfRangeException(nameof(options.StorageFormat))
-};
+// Primary storage — always binary, created directly in QuiverDbContext
+var storageProvider = new BinaryStorageProvider();
+
+// Export/Import factory — creates export-only providers on demand
+internal static IStorageProvider Create(ExportFormat format, JsonSerializerOptions? jsonOptions = null) =>
+    format switch
+    {
+        ExportFormat.Json => new JsonExportProvider(jsonOptions ?? DefaultJsonOptions),
+        ExportFormat.Xml  => new XmlExportProvider(),
+        _ => throw new ArgumentOutOfRangeException(nameof(format))
+    };
 ```
 
 ### 14.7 Change Tracking and WAL Replay
@@ -2452,8 +2507,7 @@ public class FaceDb : QuiverDbContext
 
     public FaceDb(string path) : base(new QuiverDbOptions
     {
-        DatabasePath = path,
-        StorageFormat = StorageFormat.Binary,
+        DatabasePath = path,          // binary .vdb file
         DefaultMetric = DistanceMetric.Cosine
     })
     { }
@@ -2517,8 +2571,7 @@ public class MediaDb : QuiverDbContext
 
     public MediaDb() : base(new QuiverDbOptions
     {
-        DatabasePath = "media.vdb",
-        StorageFormat = StorageFormat.Binary
+        DatabasePath = "media.vdb"
     })
     { }
 }
@@ -2555,11 +2608,10 @@ var filtered = db.Items.Search(
 ### 15.3 Simplifying Context with Primary Constructor
 
 ```csharp
-public class MyFaceDb(string path, StorageFormat format)
+public class MyFaceDb(string path)
     : QuiverDbContext(new QuiverDbOptions
     {
         DatabasePath = path,
-        StorageFormat = format,
         DefaultMetric = DistanceMetric.Cosine
     })
 {
@@ -2567,8 +2619,10 @@ public class MyFaceDb(string path, StorageFormat format)
 }
 
 // Usage
-var jsonDb = new MyFaceDb("data.json", StorageFormat.Json);
-var binaryDb = new MyFaceDb("data.vdb", StorageFormat.Binary);
+var db = new MyFaceDb("data.vdb");
+
+// Export to JSON for inspection or migration
+await db.ExportAsync("backup.json", ExportFormat.Json);
 ```
 
 ### 15.4 WAL Incremental Persistence Service
@@ -2580,7 +2634,6 @@ using Vorcyc.Quiver;
 public class MyWalDocDb(string path) : QuiverDbContext(new QuiverDbOptions
 {
     DatabasePath = path,
-    StorageFormat = StorageFormat.Binary,
     EnableWal = true,
     WalCompactionThreshold = 10_000,
     WalFlushToDisk = true
@@ -2687,6 +2740,7 @@ public class SearchService
 |----------|------|-------------|
 | `Count` | `int` | Entity count (read lock protected, thread-safe) |
 | `VectorFields` | `IReadOnlyDictionary<string, int>` | Read-only mapping of vector field name → dimensions (lazily cached) |
+| `IsLazyLoading` | `bool` | Whether the set is running in LRU page-cache mode |
 
 #### Enumeration
 
@@ -2758,13 +2812,12 @@ All synchronous search methods have corresponding `Async` suffix versions with a
 | `IVF` | Inverted File Index |
 | `KDTree` | KD Tree |
 
-#### StorageFormat
+#### ExportFormat
 
 | Value | Description |
 |-------|-------------|
-| `Json` | JSON format |
-| `Xml` | XML format |
-| `Binary` | Binary format |
+| `Json` | JSON export/import format |
+| `Xml` | XML export/import format |
 
 ### Search Result
 

@@ -10,6 +10,8 @@ await StorageTests.RunAsync();
 await WalTests.RunAsync();
 await MemoryModeTests.RunAsync();
 await SimilarityTests.RunAsync();
+await LazyLoadingTests.RunAsync();
+await MigrationTests.RunAsync();
 
 TestHelper.PrintSummary();
 

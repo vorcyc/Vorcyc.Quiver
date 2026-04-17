@@ -1,16 +1,15 @@
 ﻿namespace Vorcyc.Quiver.Storage;
 
 /// <summary>
-/// 向量数据库的存储提供者接口，定义持久化读写的统一契约。
+/// 导出/导入存储提供者接口，定义可读格式（JSON、XML）的序列化契约。
 /// <para>
-/// 所有存储格式（JSON、XML、Binary）均需实现此接口，以支持通过
-/// <see cref="StorageProviderFactory"/> 进行策略切换。
+/// 此接口仅用于 <see cref="QuiverDbContext.ExportAsync"/> 和 <see cref="QuiverDbContext.ImportAsync"/>，
+/// 不参与数据库的主存储路径（主存储始终使用 <see cref="BinaryStorageProvider"/>）。
 /// </para>
 /// </summary>
-/// <seealso cref="JsonStorageProvider"/>
-/// <seealso cref="XmlStorageProvider"/>
-/// <seealso cref="BinaryStorageProvider"/>
-/// <seealso cref="StorageProviderFactory"/>
+/// <seealso cref="JsonExportProvider"/>
+/// <seealso cref="XmlExportProvider"/>
+/// <seealso cref="ExportStorageProviderFactory"/>
 internal interface IStorageProvider
 {
     /// <summary>
@@ -37,7 +36,6 @@ internal interface IStorageProvider
     /// </param>
     /// <param name="migrationRules">
     /// 可选的 Schema 迁移规则字典。键为类型全名，值为对应的迁移规则。
-    /// <para>包含属性重命名映射，供加载时将旧属性名映射到新属性名。</para>
     /// </param>
     /// <returns>
     /// 加载后的向量集合字典。键为类型名称，值为反序列化后的实体对象列表。
@@ -49,33 +47,33 @@ internal interface IStorageProvider
 }
 
 /// <summary>
-/// 存储提供者的简单工厂，根据 <see cref="QuiverDbOptions.StorageFormat"/> 创建对应的
+/// 导出/导入存储提供者工厂，根据 <see cref="ExportFormat"/> 创建对应的
 /// <see cref="IStorageProvider"/> 实现。
 /// <para>
-/// 在 <see cref="QuiverDbContext"/> 构造时调用，实现存储策略与业务逻辑的解耦。
+/// 仅供 <see cref="QuiverDbContext.ExportAsync"/> 和 <see cref="QuiverDbContext.ImportAsync"/> 使用。
 /// </para>
 /// </summary>
-/// <seealso cref="IStorageProvider"/>
-/// <seealso cref="QuiverDbOptions"/>
-internal static class StorageProviderFactory
+internal static class ExportStorageProviderFactory
 {
     /// <summary>
-    /// 根据配置选项创建对应格式的存储提供者实例。
+    /// 根据导出格式创建对应的存储提供者实例。
     /// </summary>
-    /// <param name="options">数据库配置选项，其中 <see cref="QuiverDbOptions.StorageFormat"/> 决定创建哪种提供者。</param>
-    /// <returns>与所选存储格式匹配的 <see cref="IStorageProvider"/> 实例。</returns>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// 当 <paramref name="options"/> 的 <see cref="QuiverDbOptions.StorageFormat"/>
-    /// 不是已知的 <see cref="StorageFormat"/> 枚举值时抛出。
-    /// </exception>
-    public static IStorageProvider Create(QuiverDbOptions options) => options.StorageFormat switch
+    /// <param name="format">目标导出格式。</param>
+    /// <param name="jsonOptions">JSON 序列化选项，仅 <see cref="ExportFormat.Json"/> 时有效。</param>
+    /// <returns>与所选格式匹配的 <see cref="IStorageProvider"/> 实例。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">当 <paramref name="format"/> 不是已知枚举值时抛出。</exception>
+    public static IStorageProvider Create(ExportFormat format, System.Text.Json.JsonSerializerOptions? jsonOptions = null) =>
+        format switch
+        {
+            ExportFormat.Json => new JsonExportProvider(jsonOptions ?? DefaultJsonOptions),
+            ExportFormat.Xml  => new XmlExportProvider(),
+            _ => throw new ArgumentOutOfRangeException(nameof(format))
+        };
+
+    /// <summary>默认 JSON 导出选项：缩进 + 驼峰命名。</summary>
+    internal static readonly System.Text.Json.JsonSerializerOptions DefaultJsonOptions = new()
     {
-        // JSON 格式：传入序列化选项以控制缩进、命名策略等
-        StorageFormat.Json => new JsonStorageProvider(options.JsonOptions),
-        // XML 格式：无需额外配置
-        StorageFormat.Xml => new XmlStorageProvider(),
-        // 二进制格式：零拷贝高性能，适合生产环境
-        StorageFormat.Binary => new BinaryStorageProvider(),
-        _ => throw new ArgumentOutOfRangeException(nameof(options.StorageFormat))
+        WriteIndented = true,
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
     };
 }

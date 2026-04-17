@@ -34,8 +34,8 @@ namespace Vorcyc.Quiver.Storage;
 /// </para>
 /// </summary>
 /// <seealso cref="IStorageProvider"/>
-/// <seealso cref="StorageFormat.Xml"/>
-internal class XmlStorageProvider : IStorageProvider
+/// <seealso cref="ExportFormat.Xml"/>
+internal class XmlExportProvider : IStorageProvider
 {
     /// <summary>
     /// 将所有向量集合以 XML 格式异步持久化到指定文件。

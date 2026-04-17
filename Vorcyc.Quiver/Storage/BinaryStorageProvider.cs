@@ -25,14 +25,16 @@ namespace Vorcyc.Quiver.Storage;
 /// </para>
 /// </summary>
 /// <seealso cref="IStorageProvider"/>
-/// <seealso cref="StorageFormat.Binary"/>
 internal class BinaryStorageProvider : IStorageProvider
 {
     /// <summary>
     /// 文件魔术字节，用于标识文件格式和版本。
-    /// <para>值为 <c>"QDB\x02"</c>（ASCII），其中 <c>\x02</c> 表示版本 2。</para>
+    /// <para>值为 <c>"QDB\x03"</c>（ASCII），其中 <c>\x03</c> 表示版本 3。</para>
     /// </summary>
-    private static readonly byte[] Magic = "QDB\x02"u8.ToArray();
+    private static readonly byte[] Magic   = "QDB\x03"u8.ToArray();
+
+    /// <summary>版本 2 的魔术字节，用于向后兼容读取。</summary>
+    private static readonly byte[] MagicV2 = "QDB\x02"u8.ToArray();
 
     /// <summary>版本 1 的魔术字节，用于向后兼容读取。</summary>
     private static readonly byte[] MagicV1 = "QDB\x01"u8.ToArray();
@@ -268,9 +270,11 @@ internal class BinaryStorageProvider : IStorageProvider
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536);
             using var br = new BinaryReader(fs);
 
-            // 校验文件头魔术字节（兼容 v1 和 v2）
+            // 校验文件头魔术字节（兼容 v1、v2、v3）
             var magic = br.ReadBytes(4);
-            if (!magic.AsSpan().SequenceEqual(Magic) && !magic.AsSpan().SequenceEqual(MagicV1))
+            if (!magic.AsSpan().SequenceEqual(Magic) &&
+                !magic.AsSpan().SequenceEqual(MagicV2) &&
+                !magic.AsSpan().SequenceEqual(MagicV1))
                 throw new InvalidDataException("Invalid QuiverDb binary file.");
 
             var setCount = br.ReadInt32();

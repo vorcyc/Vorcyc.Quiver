@@ -70,7 +70,7 @@ public partial class QuiverSet<TEntity>
             var (name, field) = ResolveField(vectorSelector);
             ArgumentOutOfRangeException.ThrowIfNotEqual(queryVector.Length, field.Dimensions);
 
-            var overFetch = Math.Min(topK * overFetchMultiplier, _entities.Count);
+            var overFetch = Math.Min(topK * overFetchMultiplier, _indices[name].Count);
 
             var results = new List<QuiverSearchResult<TEntity>>(topK);
             foreach (var (id, similarity) in SearchIndex(name, field, queryVector, overFetch))

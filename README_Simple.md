@@ -1,12 +1,25 @@
-﻿# Vorcyc Quiver 2.0.0
+﻿# Vorcyc Quiver 3.0.0
 
-![Vorcyc Quiver 2.0.0](logo.jpg "Vorcyc Quiver 2.0.0")
+![Vorcyc Quiver 3.0.0](logo.jpg "Vorcyc Quiver 3.0.0")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
 📖 [Github Repo (full documention)](https://github.com/vorcyc/Vorcyc.Quiver)
 
 **Quiver** draws on EF Core's `DbContext` design pattern, allowing developers to define entities and indexing strategies through declarative attributes such as `[QuiverKey]`, `[QuiverVector]`, and `[QuiverIndex]`, with the framework automatically completing model discovery, index construction, and persistence management at runtime.
+
+---
+
+## 🆕 What's New in 3.0.0
+
+> v3.0.0 is fully backward-compatible with v1.x and v2.x data files — no migration needed.
+
+| Category | Change |
+|----------|--------|
+| **Lazy-loading page cache** | `EntityCache = EntityCacheMode.LazyPaging` — entity objects loaded on demand in fixed-size pages, evicted by LRU when memory ceiling is reached |
+| **Bounded memory** | `MaxCachedPages × PageSize × entity size` caps working-set size regardless of total dataset size |
+| **Vector indexes stay resident** | HNSW / IVF / KDTree topology structures always in memory; search performance is unaffected |
+| **`IsLazyLoading` property** | `QuiverSet<T>.IsLazyLoading` reflects the current caching mode |
 
 ---
 
@@ -17,10 +30,10 @@
 | Category | Change |
 |----------|--------|
 | **Architecture** | `SimilarityFunc` delegate → `ISimilarity<T>` static abstract interface (JIT-inlined, zero dispatch overhead) |
-| **Architecture** | New `IVectorStore` abstraction: `HeapVectorStore` (GC heap) + `MmapVectorStore` (memory-mapped arena) |
+| **Binary-first storage** | Primary storage is always binary. JSON/XML are export/import-only side channels (`ExportAsync` / `ImportAsync`) |
 | **New Metrics** | 6 new: Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra — plus the original 3 (Cosine / Euclidean / DotProduct), totaling 9 built-in |
 | **Custom Similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySim))]` — plug in any `ISimilarity<float>` struct |
-| **Memory Mode** | `MemoryMode.MemoryMapped` — vectors in OS-managed mmap, zero GC pressure, exceeds physical RAM |
+| **Vector Storage Mode** | `VectorStorage = VectorStorageMode.MemoryMapped` — vectors in OS-managed mmap, zero GC pressure, exceeds physical RAM |
 | **SIMD** | All 9 metrics use `Vector<float>` / `TensorPrimitives` SIMD, auto-adapts to SSE4/AVX2/AVX-512 |
 
 ---
@@ -28,10 +41,11 @@
 - **Code-First Declarative Modeling** — Annotate entity classes with attributes; the framework auto-discovers and registers `QuiverSet<T>` collections via reflection — zero configuration.
 - **Multiple ANN Index Algorithms** — Built-in Flat (brute-force), HNSW, IVF, and KDTree indexes, covering small-scale exact search to million-scale approximate search.
 - **9 Distance Metrics + Custom Similarity** — Cosine, Euclidean, DotProduct, Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra. Or plug in your own `ISimilarity<float>`.
-- **Flexible Persistence** — JSON (readable), XML (compatible), Binary (high-performance) formats, plus WAL incremental persistence reducing complexity from O(N) to O(Δ).
+- **Binary-First Persistence** — Primary storage is always high-performance binary. JSON and XML are available as export/import side channels (`ExportAsync` / `ImportAsync`) for readable backups and interoperability. WAL incremental persistence reduces complexity from O(N) to O(Δ).
 - **Concurrency Safe** — `QuiverSet<T>` uses `ReaderWriterLockSlim` internally; concurrent reads and writes are safe out-of-the-box.
 - **SIMD Accelerated** — All similarity implementations use `TensorPrimitives` + `Vector<float>` SIMD, auto-adapting to SSE4/AVX2/AVX-512.
-- **Memory-Mapped Storage** — Optional `MemoryMode.MemoryMapped` for zero-GC vector storage via OS mmap arena files.
+- **Memory-Mapped Vector Storage** — Optional `VectorStorage = VectorStorageMode.MemoryMapped` for zero-GC vector storage via OS mmap arena files.
+- **Lazy-loading Page Cache** — Optional `EntityCache = EntityCacheMode.LazyPaging` with LRU eviction and `MaxCachedPages` / `PageSize` controls. Entity objects load on demand; vector indexes remain resident for full search performance.
 - **Schema Migration** — Property rename and value transform via `ConfigureMigration<T>()`. Adding/removing fields requires no configuration.
 
 **Typical Use Cases**: Semantic search · RAG · Face recognition · Image-to-image search · Recommendation systems · Multimodal retrieval
@@ -68,8 +82,7 @@ public class MyDocumentDb : QuiverDbContext
 
     public MyDocumentDb() : base(new QuiverDbOptions
     {
-        DatabasePath = "documents.json",
-        StorageFormat = StorageFormat.Json,
+        DatabasePath = "documents.vdb",
         DefaultMetric = DistanceMetric.Cosine
     })
     { }
@@ -205,17 +218,21 @@ var results = db.Documents.Search(queryVector, topK: 5);
 ## 💾 Persistence
 
 ```csharp
-await db.SaveAsync();           // Full snapshot
+await db.SaveAsync();           // Full binary snapshot
 await db.SaveChangesAsync();    // WAL incremental, O(Δ)
 await db.CompactAsync();        // Full snapshot + clear WAL
 await db.LoadAsync();           // Load snapshot + replay WAL
+
+// Export / Import side channels
+await db.ExportAsync("backup.json", ExportFormat.Json);
+await db.ImportAsync("backup.json", ExportFormat.Json);
 ```
 
-| Format | Readability | Size | Speed | Use Case |
-|--------|-------------|------|-------|----------|
-| `Json` | ✅ Excellent | Largest | Average | Development and debugging |
-| `Xml` | ✅ Good | Large | Average | Compatibility |
-| `Binary` | ❌ | **Smallest** | **Fastest** | Production |
+| Storage | Role | Description |
+|---------|------|-------------|
+| **Binary** | Primary (always) | Smallest size, fastest I/O, zero-copy via `MemoryMarshal` |
+| **Json** | Export/Import only | Human-readable via `ExportAsync` / `ImportAsync` |
+| **Xml** | Export/Import only | Compatible format via `ExportAsync` / `ImportAsync` |
 
 ### WAL Mode
 
@@ -223,7 +240,6 @@ await db.LoadAsync();           // Load snapshot + replay WAL
 var options = new QuiverDbOptions
 {
     DatabasePath = "mydata.vdb",
-    StorageFormat = StorageFormat.Binary,
     EnableWal = true,
     WalCompactionThreshold = 10_000,
     WalFlushToDisk = true
@@ -271,12 +287,13 @@ public class MyDb : QuiverDbContext
 |----------|------|---------|-------------|
 | `DatabasePath` | `string?` | `null` | Storage path; `null` = in-memory mode |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | Default distance metric |
-| `StorageFormat` | `StorageFormat` | `Json` | `Json` / `Xml` / `Binary` |
-| `MemoryMode` | `MemoryMode` | `FullMemory` | `FullMemory` (GC heap) / `MemoryMapped` (mmap, zero GC) |
-| `JsonOptions` | `JsonSerializerOptions` | Indented + CamelCase | JSON serialization options |
+| `VectorStorage` | `VectorStorageMode` | `Heap` | `Heap` (GC heap) / `MemoryMapped` (mmap, zero GC) |
+| `EntityCache` | `EntityCacheMode` | `FullMemory` | `FullMemory` (always resident) / `LazyPaging` (LRU page cache, requires `DatabasePath`) |
 | `EnableWal` | `bool` | `false` | Enable WAL incremental persistence |
 | `WalCompactionThreshold` | `int` | `10,000` | Auto-compact threshold |
 | `WalFlushToDisk` | `bool` | `true` | fsync after WAL write |
+| `MaxCachedPages` | `int` | `16` | Max pages in memory per `QuiverSet` |
+| `PageSize` | `int` | `512` | Entities per page |
 
 ---
 

@@ -35,8 +35,7 @@ using Quiver.Storage.Wal;
 ///     public MyDb() : base(new QuiverDbOptions           
 ///     {
 ///         DatabasePath = "my.db",
-///         EnableWal = true,
-///         StorageFormat = StorageFormat.Binary
+///         EnableWal = true
 ///     }) { }
 /// }
 /// </code>
@@ -59,10 +58,10 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     /// </summary>
     private readonly Dictionary<string, Type> _typeMap = [];
 
-    /// <summary>存储提供者实例，根据 <see cref="QuiverDbOptions.StorageFormat"/> 创建。</summary>
-    private readonly IStorageProvider _storageProvider;
+    /// <summary>二进制存储提供者（唯一主存储格式）。</summary>
+    private readonly BinaryStorageProvider _storageProvider = new();
 
-    /// <summary>数据库配置选项（路径、默认度量、存储格式等）。</summary>
+    /// <summary>数据库配置选项（路径、默认度量等）。</summary>
     private readonly QuiverDbOptions _options;
 
     /// <summary>WAL 实例。仅当 <see cref="QuiverDbOptions.EnableWal"/> 为 <c>true</c> 时非空。</summary>
@@ -81,6 +80,12 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     private readonly Dictionary<Type, MethodInfo> _drainMethodCache = [];
 
     /// <summary>
+    /// 缓存的反射方法引用 —— <c>GetAll</c>。
+    /// 由 <see cref="SaveAsync"/> 和 <see cref="ExportAsync"/> 使用，避免每次调用重复反射查找。
+    /// </summary>
+    private readonly Dictionary<Type, MethodInfo> _getAllMethodCache = [];
+
+    /// <summary>
     /// 缓存的主键属性类型，用于 WAL 回放时反序列化主键。
     /// 键为实体类型全名，值为主键属性的 <see cref="PropertyInfo"/>。
     /// </summary>
@@ -95,11 +100,11 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     /// </summary>
     private readonly Dictionary<Type, SchemaMigrationRule> _migrations = [];
 
-    /// <summary>是否已释放。防止重复释放。</summary>
-    private bool _disposed;
+    /// <summary>释放标志：0 = 未释放，1 = 已释放。使用 <see cref="Interlocked.Exchange"/> 保证并发 Dispose 安全。</summary>
+    private int _disposed;
 
     /// <summary>
-    /// 使用默认选项创建上下文。默认存储格式为 JSON，默认度量为 Cosine。
+    /// 使用默认选项创建上下文。默认度量为 Cosine，主存储为二进制格式（QDB v3），无持久化路径（内存模式）。
     /// </summary>
     protected QuiverDbContext() : this(new QuiverDbOptions()) { }
 
@@ -113,7 +118,6 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     {
         _options = options;
         options.Validate();
-        _storageProvider = StorageProviderFactory.Create(options);
 
         // 反射扫描子类属性，自动创建并注入所有 QuiverSet<T> 实例
         InitializeSets();
@@ -156,7 +160,8 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                 typeof(QuiverSet<>).MakeGenericType(entityType),
                 BindingFlags.Instance | BindingFlags.NonPublic,
                 null,
-                [_options.DefaultMetric, _options.MemoryMode, _options.DatabasePath],
+                [_options.DefaultMetric, _options.VectorStorage, _options.DatabasePath,
+                 _options.EntityCache, _options.MaxCachedPages, _options.PageSize],
                 null);
 
             // 注册到内部字典
@@ -169,6 +174,9 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
             // 缓存反射方法引用
             _drainMethodCache[entityType] = setInstance!.GetType()
                 .GetMethod("DrainChanges", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+            _getAllMethodCache[entityType] = setInstance!.GetType()
+                .GetMethod("GetAll", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
             // 缓存主键属性信息（WAL 回放反序列化主键时使用）
             var keyProp = entityType.GetProperties()
@@ -267,14 +275,16 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
         foreach (var (type, set) in _sets)
         {
-            // 反射调用 internal 方法 GetAll() 获取实体快照
-            var getAll = set.GetType().GetMethod("GetAll", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var getAll = _getAllMethodCache[type];
             var entities = ((IEnumerable<object>)getAll.Invoke(set, null)!).ToList();
             setsData[type.FullName!] = (type, entities);
         }
 
         // 原子写入：先写临时文件，成功后替换原文件
         var tempPath = filePath + ".tmp";
+        var dir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
         await _storageProvider.SaveAsync(tempPath, setsData);
         File.Move(tempPath, filePath, overwrite: true);
 
@@ -524,6 +534,94 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
     #endregion
 
+    #region 导出 / 导入
+
+    /// <summary>
+    /// 将当前数据库中的所有实体异步导出到指定文件。
+    /// <para>
+    /// 导出格式为可读的 JSON 或 XML，适合数据备份、跨平台交换或人工检查。
+    /// 主存储格式（二进制 QDB）不受影响。
+    /// </para>
+    /// </summary>
+    /// <param name="filePath">导出目标文件路径。</param>
+    /// <param name="format">导出格式，默认为 <see cref="ExportFormat.Json"/>。</param>
+    /// <param name="jsonOptions">
+    /// 仅 <see cref="ExportFormat.Json"/> 时生效的序列化选项。
+    /// 为 <c>null</c> 时使用默认选项（缩进 + 驼峰命名）。
+    /// </param>
+    public async Task ExportAsync(
+        string filePath,
+        ExportFormat format = ExportFormat.Json,
+        System.Text.Json.JsonSerializerOptions? jsonOptions = null)
+    {
+        var provider = Vorcyc.Quiver.Storage.ExportStorageProviderFactory.Create(format, jsonOptions);
+
+        var setsData = new Dictionary<string, (Type Type, List<object> Entities)>();
+        foreach (var (type, set) in _sets)
+        {
+            var getAll = _getAllMethodCache[type];
+            var entities = ((IEnumerable<object>)getAll.Invoke(set, null)!).ToList();
+            setsData[type.FullName!] = (type, entities);
+        }
+
+        await provider.SaveAsync(filePath, setsData);
+    }
+
+    /// <summary>
+    /// 从 JSON 或 XML 文件异步导入数据，合并到当前数据库中。
+    /// <para>
+    /// 导入时对每条记录执行 Upsert（已存在则更新，不存在则新增），不清空现有数据。
+    /// Schema 迁移规则同样适用于导入数据。
+    /// </para>
+    /// </summary>
+    /// <param name="filePath">源文件路径。</param>
+    /// <param name="format">源文件格式，默认为 <see cref="ExportFormat.Json"/>。</param>
+    /// <param name="jsonOptions">
+    /// 仅 <see cref="ExportFormat.Json"/> 时生效的反序列化选项。
+    /// 为 <c>null</c> 时使用默认选项（缩进 + 驼峰命名）。
+    /// </param>
+    public async Task ImportAsync(
+        string filePath,
+        ExportFormat format = ExportFormat.Json,
+        System.Text.Json.JsonSerializerOptions? jsonOptions = null)
+    {
+        var provider = Vorcyc.Quiver.Storage.ExportStorageProviderFactory.Create(format, jsonOptions);
+
+        IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null;
+        if (_migrations.Count > 0)
+            migrationRules = _migrations.ToDictionary(kv => kv.Key.FullName!, kv => kv.Value);
+
+        var loadedSets = await provider.LoadAsync(filePath, _typeMap, migrationRules);
+
+        foreach (var (typeName, entities) in loadedSets)
+        {
+            if (!_typeMap.TryGetValue(typeName, out var type) || !_sets.TryGetValue(type, out var set))
+                continue;
+
+            // 应用值转换规则
+            if (_migrations.TryGetValue(type, out var rule) && rule.ValueTransforms.Count > 0)
+            {
+                foreach (var entity in entities)
+                    foreach (var (propName, transform) in rule.ValueTransforms)
+                    {
+                        var prop = type.GetProperty(propName);
+                        if (prop == null) continue;
+                        var oldValue = prop.GetValue(entity);
+                        var newValue = transform(oldValue);
+                        if (!Equals(oldValue, newValue))
+                            prop.SetValue(entity, newValue);
+                    }
+            }
+
+            // 逐条 Upsert
+            var upsertMethod = set.GetType().GetMethod("Upsert", BindingFlags.Instance | BindingFlags.Public)!;
+            foreach (var entity in entities)
+                upsertMethod.Invoke(set, [entity]);
+        }
+    }
+
+    #endregion
+
     #region Dispose
 
     /// <summary>
@@ -532,15 +630,14 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     /// </summary>
     public void Dispose()
     {
-        if (!_disposed)
-        {
-            _wal?.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
 
-            foreach (var set in _sets.Values)
-                if (set is IDisposable d) d.Dispose();
-            _sets.Clear();
-            _disposed = true;
-        }
+        _wal?.Dispose();
+
+        foreach (var set in _sets.Values)
+            if (set is IDisposable d) d.Dispose();
+        _sets.Clear();
         GC.SuppressFinalize(this);
     }
 
@@ -561,22 +658,24 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     /// </example>
     public async ValueTask DisposeAsync()
     {
-        if (!_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        // 先保存数据到磁盘（内存模式下 DatabasePath 为 null，跳过保存）
+        if (!string.IsNullOrEmpty(_options.DatabasePath))
         {
-            // 先保存数据到磁盘
             if (_wal != null)
                 await SaveChangesAsync();
             else
                 await SaveAsync();
-
-            _wal?.Dispose();
-
-            // 再释放所有 QuiverSet 实例
-            foreach (var set in _sets.Values)
-                if (set is IDisposable d) d.Dispose();
-            _sets.Clear();
-            _disposed = true;
         }
+
+        _wal?.Dispose();
+
+        // 再释放所有 QuiverSet 实例
+        foreach (var set in _sets.Values)
+            if (set is IDisposable d) d.Dispose();
+        _sets.Clear();
         GC.SuppressFinalize(this);
     }
 

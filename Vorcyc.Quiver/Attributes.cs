@@ -295,14 +295,18 @@ public enum DistanceMetric
 }
 
 /// <summary>
-/// 向量数据库的持久化存储格式。
+/// 数据导出/导入的文件格式。
+/// <para>
+/// 仅用于 <see cref="QuiverDbContext.ExportAsync"/> 和 <see cref="QuiverDbContext.ImportAsync"/>，
+/// 不影响数据库的主存储格式（始终为紧凑二进制格式）。
+/// </para>
 /// </summary>
-/// <seealso cref="QuiverDbOptions"/>
-public enum StorageFormat
+/// <seealso cref="QuiverDbContext"/>
+public enum ExportFormat
 {
     /// <summary>
-    /// JSON 格式。可读性好，便于调试和手动编辑。文件体积较大。
-    /// <para>使用 <c>System.Text.Json</c> 序列化。</para>
+    /// JSON 格式。可读性好，便于调试和与外部系统交换数据。
+    /// <para>使用 <c>System.Text.Json</c> 序列化，默认启用缩进和驼峰命名。</para>
     /// </summary>
     Json,
 
@@ -311,40 +315,32 @@ public enum StorageFormat
     /// <para>使用 <c>System.Xml.Linq</c> 序列化。</para>
     /// </summary>
     Xml,
-
-    /// <summary>
-    /// 二进制格式。文件体积最小、读写最快，但不可人工阅读。
-    /// <para>
-    /// 向量数据直接写入 <c>byte[]</c>（零拷贝 <c>MemoryMarshal.AsBytes</c>），
-    /// 无精度损失，适合生产环境。
-    /// </para>
-    /// </summary>
-    Binary
 }
 
 /// <summary>
-/// 向量索引的运行时内存管理模式，控制向量数据的物理存储位置。
+/// 控制<b>向量数据</b>（<c>float[]</c>）的物理存储介质。
 /// <para>
-/// 通过 <see cref="QuiverDbOptions.MemoryMode"/> 设置。
-/// 不同模式在 GC 压力、物理内存占用和可扩展数据规模之间提供不同权衡。
+/// 通过 <see cref="QuiverDbOptions.VectorStorage"/> 设置。
+/// 仅影响向量数组本身，与实体对象的缓存策略（<see cref="EntityCacheMode"/>）完全正交，可任意组合。
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverDbOptions"/>
-public enum MemoryMode
+/// <seealso cref="EntityCacheMode"/>
+public enum VectorStorageMode
 {
     /// <summary>
-    /// 全量内存模式（默认）。所有向量数据以 <c>float[]</c> 形式驻留在 GC 托管堆上。
+    /// GC 托管堆存储（默认）。所有向量数据以 <c>float[]</c> 形式驻留在 GC 托管堆上。
     /// <para>
-    /// 优点：搜索延迟最低，无 page fault 开销。<br/>
+    /// 优点：访问延迟最低，无 page fault 开销。<br/>
     /// 缺点：向量数据完全占用托管堆内存，大数据集会产生 GC 压力。<br/>
     /// 适用：中小规模数据集（实体数 &lt; 50 万）或对延迟要求极高的场景。
     /// </para>
     /// </summary>
-    FullMemory,
+    Heap,
 
     /// <summary>
-    /// 内存映射模式。向量数据存储在 <see cref="System.IO.MemoryMappedFiles.MemoryMappedFile"/>
-    /// 管理的映射区域（arena 文件），不占用 GC 托管堆。
+    /// 内存映射存储。向量数据存储在 <see cref="System.IO.MemoryMappedFiles.MemoryMappedFile"/>
+    /// 管理的 arena 文件中，不占用 GC 托管堆。
     /// 操作系统按需将文件页面换入/换出物理内存。
     /// <para>
     /// 优点：向量数据零 GC 压力，物理内存占用由 OS 按访问热度自动管理，可处理超出物理内存的数据集。<br/>
@@ -357,3 +353,41 @@ public enum MemoryMode
     /// </summary>
     MemoryMapped
 }
+
+/// <summary>
+/// 控制<b>实体对象</b>（<c>TEntity</c>）的内存缓存策略。
+/// <para>
+/// 通过 <see cref="QuiverDbOptions.EntityCache"/> 设置。
+/// 仅影响实体对象本身，与向量数据的存储介质（<see cref="VectorStorageMode"/>）完全正交，可任意组合。
+/// </para>
+/// </summary>
+/// <seealso cref="QuiverDbOptions"/>
+/// <seealso cref="VectorStorageMode"/>
+public enum EntityCacheMode
+{
+    /// <summary>
+    /// 全量内存（默认）。所有实体对象常驻内存字典，访问延迟最低，行为与旧版完全一致。
+    /// <para>
+    /// 适用：实体对象较小，或数据集规模在百万以下的场景。
+    /// </para>
+    /// </summary>
+    FullMemory,
+
+    /// <summary>
+    /// 懒加载分页缓存。实体对象按页（<see cref="QuiverDbOptions.PageSize"/> 条/页）管理，
+    /// 内存中最多保留 <see cref="QuiverDbOptions.MaxCachedPages"/> 页，
+    /// 超限时通过 LRU 策略将冷页序列化到 <c>.qvpg</c> 页文件，按需换入。
+    /// <para>
+    /// 向量索引结构（HNSW/IVF 等）不受影响，始终常驻内存以保证搜索性能。
+    /// </para>
+    /// <para>
+    /// 适用：实体对象本身占用内存较大，或数据集规模超过百万级，且访问模式具有局部性的场景。
+    /// </para>
+    /// <para>
+    /// 要求：必须设置 <see cref="QuiverDbOptions.DatabasePath"/>。
+    /// 页文件存放在 <c>{DatabasePath}.pages\{EntityTypeName}\</c> 目录下。
+    /// </para>
+    /// </summary>
+    LazyPaging
+}
+

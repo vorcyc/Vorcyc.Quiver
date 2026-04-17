@@ -1,54 +1,126 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Vorcyc.Quiver;
 using static AllBasicTests.TestHelper;
 
 namespace AllBasicTests;
 
-/// <summary>测试 10-11：文件大小对比 + 新增属性类型往返测试。</summary>
+/// <summary>测试 10-11：Export/Import 功能 + 新增属性类型往返测试。</summary>
 public static class StorageTests
 {
     public static async Task RunAsync()
     {
-        await Test10_FileSizeComparison();
+        await Test10_ExportImport();
         await Test11_RichTypeRoundTrip();
     }
 
-    // ==================== 10. 文件大小对比 ====================
-    private static async Task Test10_FileSizeComparison()
+    // ==================== 10. Export / Import 测试 ====================
+    private static async Task Test10_ExportImport()
     {
-        Console.WriteLine("\n═══ 10. 三种格式文件大小对比（2,000 条 × 3 向量）═══");
+        Console.WriteLine("\n═══ 10. Export / Import（JSON & XML 导出往返）═══");
 
-        var sizes = new long[Formats.Length];
-        for (int f = 0; f < Formats.Length; f++)
+        var random = new Random(42);
+
+        // 构造原始数据
+        var originals = Enumerable.Range(0, 100).Select(i => new FaceFeature
         {
-            var format = Formats[f];
-            var path = $"test_size{Extensions[f]}";
-            var random = new Random(42);
+            PersonId = $"EI{i:D4}",
+            Name = $"Person{i}",
+            RegisterTime = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i),
+            Embedding = RandomVector(random, 128)
+        }).ToList();
 
-            var db = new MyMultiVectorDb(path, format);
-            for (int i = 0; i < 2000; i++)
+        foreach (var format in ExportFormats)
+        {
+            var ext = format == ExportFormat.Json ? ".json" : ".xml";
+            var srcPath = Path.GetTempFileName() + ".vdb";
+            var expPath = srcPath + ext;
+            var impPath = Path.GetTempFileName() + ".vdb";
+
+            try
             {
-                db.Items.Add(new MultiVectorEntity
+                // 写入主存储
+                await using var src = new MyFaceDb(srcPath);
+                await src.LoadAsync();
+                src.Faces.AddRange(originals);
+                await src.SaveAsync();
+
+                // 导出
+                await src.ExportAsync(expPath, format);
+                Assert(File.Exists(expPath), $"[{format}] 导出文件已生成");
+                Assert(new FileInfo(expPath).Length > 0, $"[{format}] 导出文件非空");
+
+                // 导入到新库
+                await using var dst = new MyFaceDb(impPath);
+                await dst.LoadAsync();
+                await dst.ImportAsync(expPath, format);
+
+                Assert(dst.Faces.Count == originals.Count,
+                    $"[{format}] Import 后 Count == {originals.Count}");
+
+                // 抽样校验数据完整性
+                var sample = dst.Faces.Find("EI0050");
+                Assert(sample is not null, $"[{format}] Import 后 Find(EI0050) 成功");
+                Assert(sample?.Name == "Person50", $"[{format}] Import 后 Name 正确");
+
+                // 向量精度（JSON 有精度损耗，仅校验近似）
+                if (format == ExportFormat.Json)
+                {
+                    var orig50 = originals.First(e => e.PersonId == "EI0050");
+                    var maxDiff = sample!.Embedding.Zip(orig50.Embedding, (a, b) => MathF.Abs(a - b)).Max();
+                    Assert(maxDiff < 1e-5f, $"[{format}] 向量精度损失 < 1e-5（实际 {maxDiff:G3}）");
+                }
+
+                // 搜索仍可正常使用
+                var query = dst.Faces.Find("EI0001")!.Embedding;
+                var hits = dst.Faces.Search(query, topK: 3);
+                Assert(hits.Count == 3, $"[{format}] Import 后 Search topK=3 返回 3 条");
+                Assert(hits[0].Entity.PersonId == "EI0001", $"[{format}] Import 后 Search 最近邻为自身");
+            }
+            finally
+            {
+                foreach (var f in new[] { srcPath, expPath, impPath })
+                    if (File.Exists(f)) File.Delete(f);
+            }
+        }
+
+        // 导出/导入大小对比（信息性输出，不断言）
+        Console.WriteLine("\n  ─── 导出文件大小对比（2,000 条 × 3 向量）───");
+        var rng2 = new Random(42);
+        var bigPath = Path.GetTempFileName() + ".vdb";
+        try
+        {
+            await using var bigDb = new MyMultiVectorDb(bigPath);
+            await bigDb.LoadAsync();
+            for (int i = 0; i < 2000; i++)
+                bigDb.Items.Add(new MultiVectorEntity
                 {
                     Id = $"Z{i:D4}",
                     Label = $"用户{i}",
                     Score = i,
                     IsActive = true,
-                    TextEmbedding = RandomVector(random, 384),
-                    ImageEmbedding = RandomVector(random, 512),
-                    AudioEmbedding = RandomVector(random, 256)
+                    TextEmbedding = RandomVector(rng2, 384),
+                    ImageEmbedding = RandomVector(rng2, 512),
+                    AudioEmbedding = RandomVector(rng2, 256)
                 });
-            }
-            await db.SaveAsync();
-            sizes[f] = new FileInfo(path).Length;
-            File.Delete(path);
-        }
+            await bigDb.SaveAsync();
 
-        Console.WriteLine($"  JSON:   {sizes[0],14:N0} bytes");
-        Console.WriteLine($"  XML:    {sizes[1],14:N0} bytes");
-        Console.WriteLine($"  Binary: {sizes[2],14:N0} bytes");
-        Console.WriteLine($"  压缩比：JSON/Binary = {(double)sizes[0] / sizes[2]:F1}x, XML/Binary = {(double)sizes[1] / sizes[2]:F1}x");
-        Assert(sizes[2] < sizes[0] && sizes[2] < sizes[1], "Binary 格式文件体积最小");
+            var binSize = new FileInfo(bigPath).Length;
+            Console.WriteLine($"    Binary（主存储）:  {binSize,14:N0} bytes");
+
+            foreach (var format in ExportFormats)
+            {
+                var ext = format == ExportFormat.Json ? ".json" : ".xml";
+                var expPath = bigPath + ext;
+                await bigDb.ExportAsync(expPath, format);
+                var sz = new FileInfo(expPath).Length;
+                Console.WriteLine($"    {format,-6}（导出）:     {sz,14:N0} bytes  ({(double)sz / binSize:F1}x Binary)");
+                File.Delete(expPath);
+            }
+        }
+        finally
+        {
+            if (File.Exists(bigPath)) File.Delete(bigPath);
+        }
     }
 
     // ==================== 11. 新增属性类型往返测试（Binary 格式）====================
@@ -56,11 +128,11 @@ public static class StorageTests
     {
         Console.WriteLine("\n═══ 11. 新增属性类型往返测试（byte/short/Half/DateTimeOffset/TimeSpan/byte[]/double[]）═══");
 
-        var path = "test_rich_types.vdb";
+        var path = Path.GetTempFileName() + ".vdb";
         var random = new Random(42);
 
         const int entityCount = 500;
-        var dbWrite = new MyRichTypeDb(path, StorageFormat.Binary);
+        var dbWrite = new MyRichTypeDb(path);
 
         var originals = new RichTypeEntity[entityCount];
         for (int i = 0; i < entityCount; i++)
@@ -74,7 +146,7 @@ public static class StorageTests
                 OffsetTime = new DateTimeOffset(2025, 6, 15, 10, 30, 0, TimeSpan.FromHours(i % 24 - 12)),
                 Duration = TimeSpan.FromMinutes(i * 1.5),
                 Blob = Enumerable.Range(0, 32).Select(j => (byte)((i + j) % 256)).ToArray(),
-                Weights = Enumerable.Range(0, 64).Select(j => random.NextDouble() * 2 - 1).ToArray(),
+                Weights = Enumerable.Range(0, 64).Select(_ => random.NextDouble() * 2 - 1).ToArray(),
                 Embedding = RandomVector(random, 128)
             };
             dbWrite.RichItems.Add(originals[i]);
@@ -86,7 +158,7 @@ public static class StorageTests
         var fileSize = new FileInfo(path).Length;
 
         sw.Restart();
-        var dbRead = new MyRichTypeDb(path, StorageFormat.Binary);
+        var dbRead = new MyRichTypeDb(path);
         await dbRead.LoadAsync();
         var loadMs = sw.ElapsedMilliseconds;
 
@@ -109,26 +181,19 @@ public static class StorageTests
                 loaded.Duration != orig.Duration)
             { allMatch = false; break; }
 
-            // byte[] 精确匹配
             if (!loaded.Blob.AsSpan().SequenceEqual(orig.Blob))
             { allMatch = false; break; }
 
-            // double[] 零拷贝往返应 bit-for-bit 一致
             if (loaded.Weights.Length != orig.Weights.Length)
             { allMatch = false; break; }
             for (int j = 0; j < orig.Weights.Length; j++)
-            {
                 if (loaded.Weights[j] != orig.Weights[j])
                 { allMatch = false; break; }
-            }
             if (!allMatch) break;
 
-            // float[] 向量
             for (int j = 0; j < 128; j++)
-            {
                 if (MathF.Abs(loaded.Embedding[j] - orig.Embedding[j]) > 1e-6f)
                 { allMatch = false; break; }
-            }
             if (!allMatch) break;
         }
         Assert(allMatch, $"[Binary] 全部 {entityCount} 条七种新类型字段逐字段精度校验通过");
@@ -164,7 +229,7 @@ public static class StorageTests
         });
         await dbRead.SaveAsync();
 
-        var dbVerify = new MyRichTypeDb(path, StorageFormat.Binary);
+        var dbVerify = new MyRichTypeDb(path);
         await dbVerify.LoadAsync();
         var upserted = dbVerify.RichItems.Find("RT00000")!;
         Assert(upserted.ByteVal == 128 && upserted.ShortVal == short.MaxValue && upserted.HalfVal == Half.MaxValue,

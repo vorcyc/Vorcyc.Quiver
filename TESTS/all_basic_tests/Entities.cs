@@ -1,4 +1,4 @@
-using Vorcyc.Quiver;
+﻿using Vorcyc.Quiver;
 using Vorcyc.Quiver.Similarity;
 
 namespace AllBasicTests;
@@ -111,3 +111,33 @@ public class CustomSimEntity
     [QuiverKey] public string Id { get; set; } = string.Empty;
     [QuiverVector(64, CustomSimilarity = typeof(ManhattanSimilarity))] public float[] Vec { get; set; } = [];
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Schema 迁移测试实体
+// ══════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Schema 迁移测试实体（当前/新版本）。
+/// <para>
+/// 历史 Schema（旧版二进制文件中）：
+/// <list type="bullet">
+///   <item><b>OldTitle</b>（string）→ 迁移后重命名为 <see cref="Title"/></item>
+///   <item><b>Score</b>（int）→ 迁移后仍叫 Score，但类型变为 double</item>
+///   <item><b>Legacy</b>（string）→ 迁移后已删除，加载时自动跳过</item>
+/// </list>
+/// 新增字段：
+/// <list type="bullet">
+///   <item><b>NewField</b>（string）→ 旧文件中不存在，加载后取默认值 "default"</item>
+/// </list>
+/// </para>
+/// </summary>
+public class MigrationEntity
+{
+    [QuiverKey] public string Id { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public double Score { get; set; }
+    public string NewField { get; set; } = "default";
+
+    [QuiverVector(32)] public float[] Embedding { get; set; } = [];
+}
+

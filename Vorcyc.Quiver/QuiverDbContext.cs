@@ -160,7 +160,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                 typeof(QuiverSet<>).MakeGenericType(entityType),
                 BindingFlags.Instance | BindingFlags.NonPublic,
                 null,
-                [_options.DefaultMetric, _options.VectorStorage, _options.DatabasePath,
+                [_options.DatabasePath,
                  _options.EntityCache, _options.MaxCachedPages, _options.PageSize],
                 null);
 

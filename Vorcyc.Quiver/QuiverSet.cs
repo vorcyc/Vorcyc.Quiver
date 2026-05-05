@@ -81,7 +81,8 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 实体缓存。FullMemory 模式下为直通字典，LazyLoading 模式下为 LRU 分页缓存。
+    /// 实体缓存。<see cref="EntityCacheMode.FullMemory"/> 模式下为直通字典，
+    /// <see cref="EntityCacheMode.LazyPaging"/> 模式下为 LRU 分页缓存。
     /// 对外提供与 <c>Dictionary&lt;int, TEntity&gt;</c> 相同的访问接口。
     /// </summary>
     private readonly EntityPageCache<TEntity> _entities;
@@ -139,23 +140,16 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     /// 初始化向量集合。通过反射扫描 <typeparamref name="TEntity"/> 的属性，
     /// 自动发现主键和向量字段，编译属性访问器，并为每个向量字段创建对应的索引和存储实例。
     /// </summary>
-    /// <param name="defaultMetric">
-    /// 默认距离度量。当前未使用（度量从 <see cref="QuiverVectorAttribute.Metric"/> 读取），
-    /// 保留用于未来扩展。
-    /// </param>
-    /// <param name="vectorStorage">
-    /// 向量数据的物理存储介质（GC 堆 / 内存映射 arena 文件）。
-    /// </param>
     /// <param name="databasePath">
-    /// 数据库路径。<see cref="VectorStorageMode.MemoryMapped"/> 模式下用于派生 arena 文件路径，
-    /// <see cref="EntityCacheMode.LazyPaging"/> 模式下用于派生页文件目录。
+    /// 数据库路径。<see cref="EntityCacheMode.LazyPaging"/> 模式下用于派生页文件目录。
     /// </param>
+    /// <param name="entityCache">实体对象的内存缓存策略。</param>
+    /// <param name="maxCachedPages">懒加载模式下内存中最多保留的页数。</param>
+    /// <param name="pageSize">懒加载模式下每页容纳的实体数量。</param>
     /// <exception cref="InvalidOperationException">
     /// 实体类型缺少 <see cref="QuiverKeyAttribute"/> 主键，或没有任何 <see cref="QuiverVectorAttribute"/> 向量字段。
     /// </exception>
     internal QuiverSet(
-        DistanceMetric defaultMetric = DistanceMetric.Cosine,
-        VectorStorageMode vectorStorage = VectorStorageMode.Heap,
         string? databasePath = null,
         EntityCacheMode entityCache = EntityCacheMode.FullMemory,
         int maxCachedPages = 16,
@@ -196,7 +190,7 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             vectorGetters[prop.Name] = CompileGetter<float[]?>(prop);
 
             // ── 为每个向量字段创建对应的 IVectorStore ──
-            var store = CreateVectorStore(vectorStorage, databasePath, type.Name, prop.Name, vectorAttr.Dimensions);
+            var store = new HeapVectorStore();
             vectorStores[prop.Name] = store;
 
             // ── 创建对应的向量索引实例（通过泛型辅助方法消除度量×索引的笛卡尔积）──
@@ -261,7 +255,9 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
         }
     }
 
-    /// <summary>是否处于懒加载分页缓存模式。</summary>
+    /// <summary>
+    /// 是否处于懒加载分页缓存模式（<see cref="EntityCacheMode.LazyPaging"/>）。
+    /// </summary>
     public bool IsLazyLoading => _entities.IsLazy;
 
     /// <summary>
@@ -331,6 +327,8 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     /// 从表达式树中解析向量字段名称，查找对应的字段元信息。
     /// 仅支持简单属性访问表达式（如 <c>e =&gt; e.Embedding</c>），不支持方法调用或复杂表达式。
     /// </summary>
+    /// <returns>字段名称与 <see cref="QuiverFieldInfo"/> 的元组。</returns>
+    /// <exception cref="ArgumentException">表达式不是属性访问，或属性未标记 <see cref="QuiverVectorAttribute"/>。</exception>
     private (string Name, QuiverFieldInfo Field) ResolveField(
         Expression<Func<TEntity, float[]>> vectorSelector)
     {
@@ -344,8 +342,9 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 检查是否已释放。使用 <see cref="Volatile.Read"/> 保证跨线程可见性，
-    /// 配合 <see cref="Interlocked.Exchange"/> 在 Dispose 中设置标志。
+    /// 检查集合是否已释放，若已释放则抛出 <see cref="ObjectDisposedException"/>。
+    /// 使用 <see cref="Volatile.Read"/> 保证跨线程可见性，
+    /// 配合 <see cref="Interlocked.Exchange"/> 在 <see cref="Dispose"/> 中设置标志。
     /// </summary>
     private void ThrowIfDisposed()
     {
@@ -368,8 +367,11 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// L2 归一化并返回新数组。内部使用 <see cref="TensorPrimitives"/> 的 SIMD 加速实现。
+    /// 对 <paramref name="source"/> 执行 L2 归一化并返回新数组，原数组不变。
+    /// 内部委托给 <see cref="NormalizeVector"/>，使用 <see cref="TensorPrimitives"/> SIMD 加速。
     /// </summary>
+    /// <param name="source">原始向量数据。</param>
+    /// <returns>归一化后的新 <c>float[]</c>，长度与 <paramref name="source"/> 相同。</returns>
     private static float[] NormalizeToArray(float[] source)
     {
         var result = new float[source.Length];
@@ -390,20 +392,6 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             TensorPrimitives.Divide(source, norm, destination);
         else
             destination.Clear();
-    }
-
-    /// <summary>
-    /// 根据内存模式创建对应的向量存储实例。
-    /// </summary>
-    private static IVectorStore CreateVectorStore(
-        VectorStorageMode mode, string? databasePath, string typeName, string fieldName, int dimensions)
-    {
-        return mode switch
-        {
-            VectorStorageMode.MemoryMapped => new MmapVectorStore(
-                $"{databasePath}.{typeName}.{fieldName}.vec", dimensions),
-            _ => new HeapVectorStore()
-        };
     }
 
     /// <summary>
@@ -447,7 +435,11 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     #region Dispose
 
     /// <summary>
-    /// 释放所有资源：向量存储、索引实例和读写锁。
+    /// 释放所有资源：刷写脏页、向量存储、索引实例和读写锁。
+    /// <para>
+    /// <see cref="EntityCacheMode.LazyPaging"/> 模式下会先将内存中的脏页写回磁盘，
+    /// 再释放 <see cref="EntityPageCache{TEntity}"/>。
+    /// </para>
     /// 使用 <see cref="Interlocked.Exchange"/> 保证并发调用时仅执行一次释放逻辑。
     /// </summary>
     public void Dispose()

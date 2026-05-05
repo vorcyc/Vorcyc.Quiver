@@ -1,6 +1,6 @@
-﻿# Vorcyc Quiver 3.0.0
+﻿# Vorcyc Quiver 3.1.0
 
-![Vorcyc Quiver 3.0.0](logo.jpg "Vorcyc Quiver 3.0.0")
+![Vorcyc Quiver 3.1.0](logo.jpg "Vorcyc Quiver 3.1.0")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
@@ -10,9 +10,24 @@
 
 ---
 
-## 🆕 What's New in 3.0.0
+## 🆕 What's New in 3.1.0
 
-> v3.0.0 is fully backward-compatible with v1.x and v2.x data files — no migration needed.
+> v3.1.0 is fully backward-compatible with v1.x, v2.x, and v3.0.0 data files — no migration needed.
+
+### Breaking Changes
+
+| Change | Before (v3.0.0) | After (v3.1.0) |
+|--------|-----------------|----------------|
+| **`VectorStorageMode` removed** | `VectorStorage = VectorStorageMode.MemoryMapped` — optional mmap vector arena via `MmapVectorStore` | **Removed entirely.** Vectors are always stored on the GC heap (`HeapVectorStore`). The `LazyPaging` entity cache already bounds memory; a separate mmap layer is redundant. |
+| **`QuiverSet` constructor simplified** | Accepted `DistanceMetric defaultMetric` parameter | The `defaultMetric` parameter is removed. Each vector field declares its metric independently via `[QuiverVector(dim, metric)]`. |
+
+**Migrating from v3.0.0**: Remove `VectorStorage = VectorStorageMode.MemoryMapped` from your `QuiverDbOptions` if present. No other changes required.
+
+---
+
+## What's New in 3.0.0
+
+> v3.0.0 is fully backward-compatible with v1.x and v2.x data files.
 
 | Category | Change |
 |----------|--------|
@@ -23,7 +38,7 @@
 
 ---
 
-## 🆕 What's New in 2.0.0
+## What's New in 2.0.0
 
 > v2.0.0 is fully backward-compatible with v1.x data files — no migration needed.
 
@@ -33,7 +48,6 @@
 | **Binary-first storage** | Primary storage is always binary. JSON/XML are export/import-only side channels (`ExportAsync` / `ImportAsync`) |
 | **New Metrics** | 6 new: Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra — plus the original 3 (Cosine / Euclidean / DotProduct), totaling 9 built-in |
 | **Custom Similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySim))]` — plug in any `ISimilarity<float>` struct |
-| **Vector Storage Mode** | `VectorStorage = VectorStorageMode.MemoryMapped` — vectors in OS-managed mmap, zero GC pressure, exceeds physical RAM |
 | **SIMD** | All 9 metrics use `Vector<float>` / `TensorPrimitives` SIMD, auto-adapts to SSE4/AVX2/AVX-512 |
 
 ---
@@ -44,7 +58,6 @@
 - **Binary-First Persistence** — Primary storage is always high-performance binary. JSON and XML are available as export/import side channels (`ExportAsync` / `ImportAsync`) for readable backups and interoperability. WAL incremental persistence reduces complexity from O(N) to O(Δ).
 - **Concurrency Safe** — `QuiverSet<T>` uses `ReaderWriterLockSlim` internally; concurrent reads and writes are safe out-of-the-box.
 - **SIMD Accelerated** — All similarity implementations use `TensorPrimitives` + `Vector<float>` SIMD, auto-adapting to SSE4/AVX2/AVX-512.
-- **Memory-Mapped Vector Storage** — Optional `VectorStorage = VectorStorageMode.MemoryMapped` for zero-GC vector storage via OS mmap arena files.
 - **Lazy-loading Page Cache** — Optional `EntityCache = EntityCacheMode.LazyPaging` with LRU eviction and `MaxCachedPages` / `PageSize` controls. Entity objects load on demand; vector indexes remain resident for full search performance.
 - **Schema Migration** — Property rename and value transform via `ConfigureMigration<T>()`. Adding/removing fields requires no configuration.
 
@@ -287,7 +300,6 @@ public class MyDb : QuiverDbContext
 |----------|------|---------|-------------|
 | `DatabasePath` | `string?` | `null` | Storage path; `null` = in-memory mode |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | Default distance metric |
-| `VectorStorage` | `VectorStorageMode` | `Heap` | `Heap` (GC heap) / `MemoryMapped` (mmap, zero GC) |
 | `EntityCache` | `EntityCacheMode` | `FullMemory` | `FullMemory` (always resident) / `LazyPaging` (LRU page cache, requires `DatabasePath`) |
 | `EnableWal` | `bool` | `false` | Enable WAL incremental persistence |
 | `WalCompactionThreshold` | `int` | `10,000` | Auto-compact threshold |

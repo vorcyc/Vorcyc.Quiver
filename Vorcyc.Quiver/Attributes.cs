@@ -318,51 +318,12 @@ public enum ExportFormat
 }
 
 /// <summary>
-/// 控制<b>向量数据</b>（<c>float[]</c>）的物理存储介质。
-/// <para>
-/// 通过 <see cref="QuiverDbOptions.VectorStorage"/> 设置。
-/// 仅影响向量数组本身，与实体对象的缓存策略（<see cref="EntityCacheMode"/>）完全正交，可任意组合。
-/// </para>
-/// </summary>
-/// <seealso cref="QuiverDbOptions"/>
-/// <seealso cref="EntityCacheMode"/>
-public enum VectorStorageMode
-{
-    /// <summary>
-    /// GC 托管堆存储（默认）。所有向量数据以 <c>float[]</c> 形式驻留在 GC 托管堆上。
-    /// <para>
-    /// 优点：访问延迟最低，无 page fault 开销。<br/>
-    /// 缺点：向量数据完全占用托管堆内存，大数据集会产生 GC 压力。<br/>
-    /// 适用：中小规模数据集（实体数 &lt; 50 万）或对延迟要求极高的场景。
-    /// </para>
-    /// </summary>
-    Heap,
-
-    /// <summary>
-    /// 内存映射存储。向量数据存储在 <see cref="System.IO.MemoryMappedFiles.MemoryMappedFile"/>
-    /// 管理的 arena 文件中，不占用 GC 托管堆。
-    /// 操作系统按需将文件页面换入/换出物理内存。
-    /// <para>
-    /// 优点：向量数据零 GC 压力，物理内存占用由 OS 按访问热度自动管理，可处理超出物理内存的数据集。<br/>
-    /// 缺点：随机访问冷数据可能触发 page fault（延迟 ~μs 级）。<br/>
-    /// 适用：大规模数据集（实体数 &gt; 50 万）或内存受限的部署环境。
-    /// </para>
-    /// <para>
-    /// 要求：必须设置 <see cref="QuiverDbOptions.DatabasePath"/>（用于派生 arena 文件路径）。
-    /// </para>
-    /// </summary>
-    MemoryMapped
-}
-
-/// <summary>
 /// 控制<b>实体对象</b>（<c>TEntity</c>）的内存缓存策略。
 /// <para>
 /// 通过 <see cref="QuiverDbOptions.EntityCache"/> 设置。
-/// 仅影响实体对象本身，与向量数据的存储介质（<see cref="VectorStorageMode"/>）完全正交，可任意组合。
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverDbOptions"/>
-/// <seealso cref="VectorStorageMode"/>
 public enum EntityCacheMode
 {
     /// <summary>

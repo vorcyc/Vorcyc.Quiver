@@ -44,21 +44,6 @@ public class QuiverDbOptions
     /// <value>默认为 <see cref="DistanceMetric.Cosine"/>（余弦相似度）。</value>
     public DistanceMetric DefaultMetric { get; set; } = DistanceMetric.Cosine;
 
-    /// <summary>
-    /// 向量数据（<c>float[]</c>）的物理存储介质。
-    /// <para>
-    /// <list type="bullet">
-    ///   <item><see cref="VectorStorageMode.Heap"/>（默认）：向量以 <c>float[]</c> 驻留在 GC 托管堆，访问延迟最低。</item>
-    ///   <item><see cref="VectorStorageMode.MemoryMapped"/>：向量存储在 OS 管理的内存映射 arena 文件中，
-    ///   零 GC 压力，物理内存按需换入，可处理超出物理内存的数据集。
-    ///   要求设置 <see cref="DatabasePath"/>。</item>
-    /// </list>
-    /// </para>
-    /// <para>与 <see cref="EntityCache"/> 完全正交，可任意组合。</para>
-    /// </summary>
-    /// <value>默认为 <see cref="VectorStorageMode.Heap"/>。</value>
-    public VectorStorageMode VectorStorage { get; set; } = VectorStorageMode.Heap;
-
     // ── WAL（Write-Ahead Log）增量持久化配置 ──
 
     /// <summary>
@@ -111,7 +96,6 @@ public class QuiverDbOptions
     /// <para>
     /// <b>注意</b>：向量索引结构（HNSW/IVF 等）不受此设置影响，始终常驻内存以保证搜索性能。
     /// </para>
-    /// <para>与 <see cref="VectorStorage"/> 完全正交，可任意组合。</para>
     /// </summary>
     /// <value>默认为 <see cref="EntityCacheMode.FullMemory"/>。</value>
     public EntityCacheMode EntityCache { get; set; } = EntityCacheMode.FullMemory;
@@ -138,16 +122,10 @@ public class QuiverDbOptions
     /// 验证选项组合的合法性。在 <see cref="QuiverDbContext"/> 构造时调用。
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// <see cref="VectorStorage"/> 为 <see cref="VectorStorageMode.MemoryMapped"/> 但未设置 <see cref="DatabasePath"/> 时抛出，
-    /// 或 <see cref="EntityCache"/> 为 <see cref="EntityCacheMode.LazyPaging"/> 但未设置 <see cref="DatabasePath"/> 时抛出。
+    /// <see cref="EntityCache"/> 为 <see cref="EntityCacheMode.LazyPaging"/> 但未设置 <see cref="DatabasePath"/> 时抛出。
     /// </exception>
     internal void Validate()
     {
-        if (VectorStorage == VectorStorageMode.MemoryMapped && string.IsNullOrEmpty(DatabasePath))
-            throw new InvalidOperationException(
-                $"{nameof(VectorStorage)}.{nameof(VectorStorageMode.MemoryMapped)} requires a valid {nameof(DatabasePath)} " +
-                $"for the vector arena file.");
-
         if (EntityCache == EntityCacheMode.LazyPaging && string.IsNullOrEmpty(DatabasePath))
             throw new InvalidOperationException(
                 $"{nameof(EntityCache)}.{nameof(EntityCacheMode.LazyPaging)} requires a valid {nameof(DatabasePath)} " +

@@ -1,13 +1,13 @@
-﻿# Vorcyc Quiver 3.0.0 Technical Documentation
+﻿# Vorcyc Quiver 3.1.0 Technical Documentation
 
-![Vorcyc Quiver 3.0.0](logo.jpg "Vorcyc Quiver 3.0.0")
+![Vorcyc Quiver 3.1.0](logo.jpg "Vorcyc Quiver 3.1.0")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
 > **Namespace**: `Vorcyc.Quiver`  
 > **Design Philosophy**: Similar to EF Core's `DbContext` pattern, achieving automatic discovery, index construction, and persistence of the vector database through declarative attribute annotations  
-> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · 9 built-in distance metrics + custom similarity support · Binary primary storage + JSON/XML export/import · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation · Memory-mapped vector storage · **Lazy-loading page cache (LRU, on-demand entity loading)**
-> **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery` `Schema Migration` `ISimilarity` `Custom Metric` `Memory-Mapped` `MemoryMappedFile`  
+> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · 9 built-in distance metrics + custom similarity support · Binary primary storage + JSON/XML export/import · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation · **Lazy-loading page cache (LRU, on-demand entity loading)**
+> **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery` `Schema Migration` `ISimilarity` `Custom Metric`  
 > **Name Origin**: Quiver — a container for arrows (Arrow), and the mathematical essence of a vector is an arrow
 
 ### Creation Overview
@@ -25,9 +25,36 @@ Therefore, I decided to design a brand-new vector database framework that would 
 
 ---
 
-### What's New in 3.0.0
+### What's New in 3.1.0
 
-> **File Format Compatibility**: v3.0.0 is fully backward-compatible with v1.x and v2.x data files. All three storage formats (JSON / XML / Binary), WAL files, and existing `MemoryMapped` arena files can be loaded without any migration.
+> **File Format Compatibility**: v3.1.0 is fully backward-compatible with v1.x, v2.x, and v3.0.0 data files. All three storage formats (JSON / XML / Binary) and WAL files can be loaded without any migration.
+
+#### Breaking Changes
+
+| Change | Before (v3.0.0) | After (v3.1.0) |
+|--------|-----------------|----------------|
+| **`VectorStorageMode` removed** | `QuiverDbOptions.VectorStorage = VectorStorageMode.MemoryMapped` — optional memory-mapped vector arena via `MmapVectorStore` | Removed entirely. Vectors are always stored on the GC heap (`HeapVectorStore`). The `LazyPaging` entity cache already bounds total memory; a separate mmap layer is no longer needed. |
+| **`QuiverSet` constructor simplified** | Accepted `DistanceMetric defaultMetric` as a parameter | The `defaultMetric` parameter is removed. Each vector field independently declares its metric via `[QuiverVector(dim, metric)]`. |
+
+#### Migration from v3.0.0
+
+If you previously set `VectorStorage = VectorStorageMode.MemoryMapped` in your `QuiverDbOptions`, simply remove that line — no other changes are required. Data files remain fully compatible.
+
+```csharp
+// v3.0.0 (remove the VectorStorage line)
+var options = new QuiverDbOptions
+{
+    DatabasePath = "mydata.vdb",
+    // VectorStorage = VectorStorageMode.MemoryMapped,  ← remove this
+    EntityCache = EntityCacheMode.LazyPaging,
+    MaxCachedPages = 32,
+    PageSize = 512
+};
+```
+
+#### What's New in 3.1.0
+
+> Same lazy-loading page cache features as 3.0.0, now with a simpler and more consistent architecture.
 
 #### New Features
 
@@ -78,6 +105,20 @@ var options = new QuiverDbOptions
 
 ---
 
+### What's New in 3.0.0
+
+> **File Format Compatibility**: v3.0.0 is fully backward-compatible with v1.x and v2.x data files.
+
+| Feature | Description |
+|---------|-------------|
+| **Lazy-loading page cache** | `EntityCache = EntityCacheMode.LazyPaging` — entity objects loaded on demand in fixed-size pages, evicted by LRU when `MaxCachedPages` is exceeded. |
+| **Controllable memory ceiling** | Actual entity memory usage is bounded by `MaxCachedPages × PageSize × entity size` regardless of total dataset size. |
+| **Vector indexes remain resident** | HNSW / IVF / KDTree index structures always stay in memory; search performance is unaffected by lazy-loading. |
+| **`IsLazyLoading` property** | `QuiverSet<T>.IsLazyLoading` exposes the current caching mode for diagnostics. |
+| **Memory-mapped vector storage** | `VectorStorage = VectorStorageMode.MemoryMapped` (introduced in 3.0.0, **removed in 3.1.0** — see above). |
+
+---
+
 ### What's New in 2.0.0
 
 > **File Format Compatibility**: v2.0.0 is fully backward-compatible with v1.x data files. All three storage formats (JSON / XML / Binary) and WAL files can be loaded without any migration.
@@ -95,8 +136,7 @@ var options = new QuiverDbOptions
 |---------|-------------|
 | **6 new distance metrics** | Manhattan (L1), Chebyshev (L∞), Pearson correlation, Hamming, Jaccard, Canberra — plus the original 3 (Cosine / Euclidean / DotProduct), totaling 9 built-in metrics |
 | **Custom similarity** | `[QuiverVector(128, CustomSimilarity = typeof(MySimilarity))]` — plug in any `ISimilarity<float>` struct |
-| **Memory-mapped vector storage** | `VectorStorage = VectorStorageMode.MemoryMapped` — vectors in OS-managed mmap arena, zero GC pressure, handles datasets exceeding physical memory |
-| **IVectorStore abstraction** | `HeapVectorStore` (GC heap, default) and `MmapVectorStore` (mmap file) — pluggable vector storage backends |
+| **IVectorStore abstraction** | `HeapVectorStore` (GC heap) — pluggable vector storage backend |
 
 #### Performance Improvements
 
@@ -119,8 +159,7 @@ var options = new QuiverDbOptions
 - **Out-of-the-box Concurrency Safety** — `QuiverSet<T>` internally implements reader-writer separation locks via `ReaderWriterLockSlim`, making concurrent multi-threaded searching and writing inherently safe without external locking.
 - **9 Distance Metrics + Custom Similarity** — Built-in Cosine, Euclidean, DotProduct, Manhattan, Chebyshev, Pearson, Hamming, Jaccard, Canberra. Also supports user-defined `ISimilarity<float>` implementations via `CustomSimilarity` attribute.
 - **SIMD Hardware Acceleration** — All similarity implementations leverage `TensorPrimitives` and `Vector<float>` SIMD instructions, auto-adapting to SSE4 / AVX2 / AVX-512 register widths.
-- **Memory-Mapped Vector Storage** — Optional `VectorStorage = VectorStorageMode.MemoryMapped` stores vectors in OS-managed arena files, zero GC pressure, enabling datasets exceeding physical memory.
-- **Schema Migration** — Supports property renaming and value transformation during loading via `ConfigureMigration<T>()`. Adding or removing fields requires no configuration — new fields get default values, removed fields are silently skipped.
+- **Schema Migration**
 
 **Typical Use Cases**: Semantic search, RAG (Retrieval-Augmented Generation), face recognition, image-to-image search, recommendation systems, multimodal retrieval, etc.
 
@@ -239,8 +278,8 @@ graph TB
 | `SchemaMigrationRule` | `internal class` | Stores migration rules for a single entity type: property rename map + value transform functions |
 | `ISimilarity<T>` | `public interface` | Static abstract similarity computation contract. JIT-inlined per concrete type, zero virtual dispatch |
 | `IVectorStore` | `internal interface` | Vector data storage abstraction. Decouples vector ownership from index topology |
-| `HeapVectorStore` | `internal sealed class` | GC heap vector store (`Dictionary<int, float[]>`), default mode |
-| `MmapVectorStore` | `internal sealed class` | Memory-mapped vector store (`MemoryMappedFile` arena), zero GC pressure |
+| `HeapVectorStore` | `internal sealed class` | GC heap vector store (`Dictionary<int, float[]>`), the sole vector storage backend |
+| `EntityPageCache<TEntity>` | `internal sealed class` | Lazy-loading LRU page cache. Entity objects loaded on demand; cold pages evicted to `.qvpg` binary files |
 
 ### 1.3 Class Relationship Diagram
 
@@ -354,7 +393,6 @@ classDiagram
     class QuiverDbOptions {
         +string? DatabasePath
         +DistanceMetric DefaultMetric
-        +VectorStorageMode VectorStorage
         +EntityCacheMode EntityCache
         +bool EnableWal
         +int WalCompactionThreshold
@@ -2254,9 +2292,6 @@ var options = new QuiverDbOptions
     // Default distance metric (entity-level [QuiverVector] attribute can override)
     DefaultMetric = DistanceMetric.Cosine,
 
-    // Vector storage mode: Heap (GC heap, lowest latency) or MemoryMapped (OS mmap arena, zero GC)
-    VectorStorage = VectorStorageMode.Heap,
-
     // Entity caching mode: FullMemory (all in memory) or LazyPaging (LRU page cache)
     EntityCache = EntityCacheMode.FullMemory,
 
@@ -2278,8 +2313,7 @@ var options = new QuiverDbOptions
 |----------|------|---------|-------------|
 | `DatabasePath` | `string?` | `null` | Storage path, `null` for in-memory mode (`SaveAsync` requires explicit `path`) |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | Default distance metric |
-| `VectorStorage` | `VectorStorageMode` | `Heap` | Vector storage mode: `Heap` (GC heap) / `MemoryMapped` (mmap arena, zero GC) |
-| `EntityCache` | `EntityCacheMode` | `FullMemory` | Entity caching mode: `FullMemory` (all in memory) / `LazyPaging` (LRU page cache, requires `DatabasePath`) |
+| `EntityCache` |
 | `EnableWal` | `bool` | `false` | Whether to enable WAL incremental persistence |
 | `WalCompactionThreshold` | `int` | `10,000` | Auto-compact when WAL record count reaches this value |
 | `WalFlushToDisk` | `bool` | `true` | Whether to fsync to disk after WAL write |

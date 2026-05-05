@@ -8,7 +8,6 @@ namespace Vorcyc.Quiver.Indexing;
 /// </para>
 /// </summary>
 /// <seealso cref="IVectorStore"/>
-/// <seealso cref="MmapVectorStore"/>
 internal sealed class HeapVectorStore : IVectorStore
 {
     private readonly Dictionary<int, float[]> _vectors = [];

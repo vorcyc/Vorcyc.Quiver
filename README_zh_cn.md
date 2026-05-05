@@ -1,13 +1,13 @@
-# Vorcyc Quiver 3.0.0 技术文档
+# Vorcyc Quiver 3.1.0 技术文档
 
-![Vorcyc Quiver 3.0.0](logo.jpg "Vorcyc Quiver 3.0.0")
+![Vorcyc Quiver 3.1.0](logo.jpg "Vorcyc Quiver 3.1.0")
 
 > **产品定位**：纯 .NET 实现的嵌入式向量数据库 —— 零原生依赖，进程内运行，无需独立部署数据库服务器  
 > **框架版本**：.NET 10  
 > **命名空间**：`Vorcyc.Quiver`  
 > **设计理念**：类似 EF Core 的 `DbContext` 模式，通过声明式属性标记实现向量数据库的自动发现、索引构建和持久化  
-> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 9 种内置距离度量 + 自定义相似度 · 多种持久化格式（JSON / XML / Binary） · WAL 增量持久化 · Schema Migration（属性重命名 / 值转换） · 读写分离锁并发安全 · SIMD 加速相似度计算 · 内存映射向量存储 · **懒加载分页缓存（LRU，按需实体加载）**
-> **关键字**：`嵌入式向量数据库` `纯 .NET` `ANN` `近似最近邻搜索` `相似度检索` `HNSW` `IVF` `KDTree` `Code-First` `EF Core 风格` `Embedding` `语义搜索` `人脸识别` `以图搜图` `RAG` `SIMD` `WAL` `Write-Ahead Log` `增量持久化` `崩溃恢复` `Schema Migration` `ISimilarity` `自定义度量` `内存映射` `MemoryMappedFile`
+> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 9 种内置距离度量 + 自定义相似度 · 二进制主存储 + JSON/XML 导出/导入 · WAL 增量持久化 · Schema Migration（属性重命名 / 值转换） · 读写分离锁并发安全 · SIMD 加速相似度计算 · **懒加载分页缓存（LRU，按需实体加载）**
+> **关键字**：`嵌入式向量数据库` `纯 .NET` `ANN` `近似最近邻搜索` `相似度检索` `HNSW` `IVF` `KDTree` `Code-First` `EF Core 风格` `Embedding` `语义搜索` `人脸识别` `以图搜图` `RAG` `SIMD` `WAL` `Write-Ahead Log` `增量持久化` `崩溃恢复` `Schema Migration` `ISimilarity` `自定义度量`
 > **释名**：Quiver —— 箭袋，装箭（Arrow）的容器，向量的数学本质就是箭头
 
 ### 创作梗概
@@ -25,9 +25,38 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 
 ---
 
+### 3.1.0 更新说明
+
+> **文件格式兼容性**：v3.1.0 完全向后兼容 v1.x、v2.x 和 v3.0.0 的数据文件，无需任何迁移。
+
+#### 重大变更（Breaking Changes）
+
+| 变更项 | v3.0.0 | v3.1.0 |
+|--------|--------|--------|
+| **`VectorStorageMode` 已移除** | `QuiverDbOptions.VectorStorage = VectorStorageMode.MemoryMapped` —— 可选的内存映射向量存储（`MmapVectorStore`） | **已完全移除**。向量始终存储在 GC 堆（`HeapVectorStore`）。`LazyPaging` 分页缓存已能有效控制实体内存，独立的 mmap 层不再必要。 |
+| **`QuiverSet` 构造函数简化** | 接受 `DistanceMetric defaultMetric` 参数 | 已移除该参数。每个向量字段通过 `[QuiverVector(dim, metric)]` 独立声明其度量。 |
+
+#### 从 v3.0.0 迁移
+
+如果你之前在 `QuiverDbOptions` 中设置了 `VectorStorage = VectorStorageMode.MemoryMapped`，直接删除该行即可，无需其他修改，数据文件完全兼容：
+
+```csharp
+// v3.0.0（删除 VectorStorage 行）
+var options = new QuiverDbOptions
+{
+    DatabasePath = "mydata.vdb",
+    // VectorStorage = VectorStorageMode.MemoryMapped,  ← 删除此行
+    EntityCache = EntityCacheMode.LazyPaging,
+    MaxCachedPages = 32,
+    PageSize = 512
+};
+```
+
+---
+
 ### 3.0.0 更新说明
 
-> **文件格式兼容性**：v3.0.0 完全向后兼容 v1.x 和 v2.x 的数据文件。三种存储格式（JSON / XML / Binary）、WAL 文件及现有的 MemoryMapped arena 文件均可直接加载，无需任何迁移。
+> **文件格式兼容性**：v3.0.0 完全向后兼容 v1.x 和 v2.x 的数据文件。
 
 #### 新增功能
 
@@ -38,6 +67,7 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 | **向量索引仍常驻内存** | HNSW / IVF / KDTree 索引拓扑结构始终驻留内存，搜索性能不受懒加载影响。 |
 | **`IsLazyLoading` 属性** | `QuiverSet<T>.IsLazyLoading` 可用于运行时诊断当前缓存模式。 |
 | **透明 API** | `EntityPageCache<T>` 与旧版 `Dictionary<int, TEntity>` 接口对齐，调用方代码无需任何修改。 |
+| **内存映射向量存储** | `VectorStorage = VectorStorageMode.MemoryMapped`（在 3.0.0 引入，**已在 3.1.0 移除**，见上方说明）。 |
 
 #### 新增配置项（`QuiverDbOptions`）
 
@@ -95,8 +125,7 @@ var options = new QuiverDbOptions
 |------|------|
 | **6 种新距离度量** | Manhattan（L1）、Chebyshev（L∞）、Pearson 相关、Hamming、Jaccard、Canberra —— 加上原有 3 种（Cosine / Euclidean / DotProduct），共 9 种内置度量 |
 | **自定义相似度** | `[QuiverVector(128, CustomSimilarity = typeof(MySimilarity))]` —— 接入任意 `ISimilarity<float>` 结构体 |
-| **内存映射向量存储** | `VectorStorage = VectorStorageMode.MemoryMapped` —— 向量存储在 OS 管理的 mmap 区域，零 GC 压力，可处理超出物理内存的数据集 |
-| **IVectorStore 抽象** | `HeapVectorStore`（GC 堆，默认）和 `MmapVectorStore`（mmap 文件）—— 可插拔的向量存储后端 |
+| **IVectorStore 抽象** | `HeapVectorStore`（GC 堆）—— 可插拔的向量存储后端 |
 
 #### 性能优化
 
@@ -119,8 +148,6 @@ var options = new QuiverDbOptions
 - **开箱即用的并发安全** —— `QuiverSet<T>` 内部通过 `ReaderWriterLockSlim` 实现读写分离锁，多线程并发搜索与写入天然安全，无需外部加锁。
 - **9 种距离度量 + 自定义相似度** —— 内置 Cosine、Euclidean、DotProduct、Manhattan、Chebyshev、Pearson、Hamming、Jaccard、Canberra。还支持用户通过 `CustomSimilarity` 属性接入自定义 `ISimilarity<float>` 实现。
 - **SIMD 硬件加速** —— 全部相似度实现均基于 `TensorPrimitives` 和 `Vector<float>` SIMD 指令，自动适配 SSE4 / AVX2 / AVX-512 寄存器宽度。
-- **内存映射向量存储** —— 可选 `VectorStorage = VectorStorageMode.MemoryMapped` 将向量存储在 OS 管理的 arena 文件中，零 GC 压力，支持超出物理内存的数据集。
-- **懒加载分页缓存** —— 可选 `EntityCache = EntityCacheMode.LazyPaging`，实体对象按页按需加载，通过 LRU 策略淘汰冷页，可控内存上限；向量索引仍常驻内存，搜索性能不受影响。
 - **Schema Migration** —— 支持加载时通过 `ConfigureMigration<T>()` 声明属性重命名和值转换规则。新增/删除字段无需配置——新字段取默认值，删除字段静默跳过。
 
 **典型应用场景**：语义搜索、RAG（检索增强生成）、人脸识别、以图搜图、推荐系统、多模态检索等。
@@ -240,8 +267,8 @@ graph TB
 | `SchemaMigrationRule` | `internal class` | 存储单个实体类型的迁移规则：属性重命名映射 + 值转换函数 |
 | `ISimilarity<T>` | `public interface` | 静态抽象相似度计算契约。JIT 为每个具体类型内联，零虚分派 |
 | `IVectorStore` | `internal interface` | 向量数据存储抽象。将向量所有权从索引拓扑中剥离 |
-| `HeapVectorStore` | `internal sealed class` | GC 堆向量存储（`Dictionary<int, float[]>`），默认模式 |
-| `MmapVectorStore` | `internal sealed class` | 内存映射向量存储（`MemoryMappedFile` arena），零 GC 压力 |
+| `HeapVectorStore` | `internal sealed class` | GC 堆向量存储（`Dictionary<int, float[]>`），唯一的向量存储后端 |
+| `EntityPageCache<TEntity>` | `internal sealed class` | 懒加载 LRU 分页缓存。实体按需加载，冷页驱逐后序列化为 `.qvpg` 二进制页文件 |
 
 ### 1.3 类关系图
 
@@ -355,7 +382,6 @@ classDiagram
     class QuiverDbOptions {
         +string? DatabasePath
         +DistanceMetric DefaultMetric
-        +VectorStorageMode VectorStorage
         +EntityCacheMode EntityCache
         +bool EnableWal
         +int WalCompactionThreshold
@@ -2229,13 +2255,10 @@ var options = new QuiverDbOptions
 {
     // 数据库文件路径。null 时使用内存模式（不持久化）
     // 目录不存在时由存储提供者自动创建
-    DatabasePath = @"C:\Data\MyQuiverDb.json",
+    DatabasePath = @"C:\Data\MyQuiverDb.vdb",
 
     // 默认距离度量（实体级 [QuiverVector] 特性可覆盖）
     DefaultMetric = DistanceMetric.Cosine,
-
-    // 向量存储模式：Heap（GC 堆，延迟最低）或 MemoryMapped（OS mmap 区域，零 GC）
-    VectorStorage = VectorStorageMode.Heap,
 
     // 实体缓存模式：FullMemory（全量常驻）或 LazyPaging（LRU 分页缓存）
     EntityCache = EntityCacheMode.FullMemory,
@@ -2258,7 +2281,6 @@ var options = new QuiverDbOptions
 |------|------|--------|------|
 | `DatabasePath` | `string?` | `null` | 存储路径，`null` 为内存模式（`SaveAsync` 需显式传 `path`） |
 | `DefaultMetric` | `DistanceMetric` | `Cosine` | 默认距离度量 |
-| `VectorStorage` | `VectorStorageMode` | `Heap` | 向量存储模式：`Heap`（GC 堆）/ `MemoryMapped`（mmap 区域，零 GC） |
 | `EntityCache` | `EntityCacheMode` | `FullMemory` | 实体缓存模式：`FullMemory`（全量常驻）/ `LazyPaging`（LRU 分页，须设置 `DatabasePath`） |
 | `EnableWal` | `bool` | `false` | 是否启用 WAL 增量持久化 |
 | `WalCompactionThreshold` | `int` | `10,000` | WAL 记录数达到此值时自动压缩 |

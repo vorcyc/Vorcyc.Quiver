@@ -4,10 +4,7 @@ namespace Vorcyc.Quiver.Indexing;
 /// 向量数据的存储抽象。将向量的所有权从索引实现中剥离，
 /// 使索引仅管理拓扑结构（图/树/倒排列表），向量数据由此接口的实现统一管理。
 /// <para>
-/// <list type="bullet">
-///   <item><see cref="HeapVectorStore"/>：全量内存模式，向量驻留在 GC 托管堆上。</item>
-///   <item><see cref="MmapVectorStore"/>：内存映射模式，向量驻留在 OS 管理的映射区域，零 GC 压力。</item>
-/// </list>
+/// 当前实现：<see cref="HeapVectorStore"/>——向量驻留在 GC 托管堆上。
 /// </para>
 /// </summary>
 /// <seealso cref="IVectorIndex"/>
@@ -28,10 +25,7 @@ internal interface IVectorStore : IDisposable
     /// 按内部 ID 获取向量的只读视图。
     /// <para>
     /// 返回的 <see cref="ReadOnlySpan{T}"/> 生命周期由实现决定：
-    /// <list type="bullet">
-    ///   <item><see cref="HeapVectorStore"/>：指向 GC 堆上的 <c>float[]</c>，GC 回收前有效。</item>
-    ///   <item><see cref="MmapVectorStore"/>：指向映射区域，store 未 Dispose 前有效。</item>
-    /// </list>
+    /// 返回的 <see cref="ReadOnlySpan{T}"/> 指向 GC 堆上的 <c>float[]</c>，GC 回收前有效。
     /// 调用方应在读锁内同步使用，不应长期持有。
     /// </para>
     /// </summary>

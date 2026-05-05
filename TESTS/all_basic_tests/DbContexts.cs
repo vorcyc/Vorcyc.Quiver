@@ -98,36 +98,33 @@ public class MyWalMultiVecDb(string path) : QuiverDbContext(new QuiverDbOptions
     public QuiverSet<MultiVectorEntity> Items { get; set; } = null!;
 }
 
-// ── MemoryMapped 模式数据库上下文 ──
+// ── MemoryMapped 模式数据库上下文（已合并到 LazyPaging，保留结构供测试使用）──
 
-/// <summary>MemoryMapped 模式单向量数据库上下文。</summary>
+/// <summary>原 MemoryMapped 模式单向量数据库上下文（现等同 Heap 存储）。</summary>
 public class MyMmapFaceDb(string path) : QuiverDbContext(new QuiverDbOptions
 {
     DatabasePath = path,
     DefaultMetric = DistanceMetric.Cosine,
-    VectorStorage = VectorStorageMode.MemoryMapped
 })
 {
     public QuiverSet<FaceFeature> Faces { get; set; } = null!;
 }
 
-/// <summary>MemoryMapped 模式多向量数据库上下文。</summary>
+/// <summary>原 MemoryMapped 模式多向量数据库上下文。</summary>
 public class MyMmapMultiVectorDb(string path) : QuiverDbContext(new QuiverDbOptions
 {
     DatabasePath = path,
     DefaultMetric = DistanceMetric.Cosine,
-    VectorStorage = VectorStorageMode.MemoryMapped
 })
 {
     public QuiverSet<MultiVectorEntity> Items { get; set; } = null!;
 }
 
-/// <summary>MemoryMapped + WAL 模式数据库上下文。</summary>
+/// <summary>原 MemoryMapped + WAL 模式数据库上下文。</summary>
 public class MyMmapWalDb(string path) : QuiverDbContext(new QuiverDbOptions
 {
     DatabasePath = path,
     DefaultMetric = DistanceMetric.Cosine,
-    VectorStorage = VectorStorageMode.MemoryMapped,
     EnableWal = true,
     WalFlushToDisk = true
 })

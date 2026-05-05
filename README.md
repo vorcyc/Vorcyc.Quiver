@@ -1,12 +1,12 @@
-﻿# Vorcyc Quiver 3.1.0 Technical Documentation
+﻿# Vorcyc Quiver 3.2.0 Technical Documentation
 
-![Vorcyc Quiver 3.1.0](logo.jpg "Vorcyc Quiver 3.1.0")
+![Vorcyc Quiver 3.2.0](logo.jpg "Vorcyc Quiver 3.2.0")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
 > **Namespace**: `Vorcyc.Quiver`  
 > **Design Philosophy**: Similar to EF Core's `DbContext` pattern, achieving automatic discovery, index construction, and persistence of the vector database through declarative attribute annotations  
-> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · 9 built-in distance metrics + custom similarity support · Binary primary storage + JSON/XML export/import · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation · **Lazy-loading page cache (LRU, on-demand entity loading)**
+> **Core Features**: Code-First declarative entity definition · Multiple ANN indexes (Flat / HNSW / IVF / KDTree) · 9 built-in distance metrics + custom similarity support · Binary primary storage + JSON/XML export/import · WAL incremental persistence · Schema Migration (property rename / value transform) · Reader-writer lock concurrency safety · SIMD-accelerated similarity computation · **Lazy-loading page cache (LRU, on-demand entity loading)** · **CompactMemory (on-demand memory release)**
 > **Keywords**: `Embedded Vector Database` `Pure .NET` `ANN` `Approximate Nearest Neighbor Search` `Similarity Retrieval` `HNSW` `IVF` `KDTree` `Code-First` `EF Core Style` `Embedding` `Semantic Search` `Face Recognition` `Image-to-Image Search` `RAG` `SIMD` `WAL` `Write-Ahead Log` `Incremental Persistence` `Crash Recovery` `Schema Migration` `ISimilarity` `Custom Metric`  
 > **Name Origin**: Quiver — a container for arrows (Arrow), and the mathematical essence of a vector is an arrow
 
@@ -25,9 +25,21 @@ Therefore, I decided to design a brand-new vector database framework that would 
 
 ---
 
+### What's New in 3.2.0
+
+> **File Format Compatibility**: v3.2.0 is fully backward-compatible with v1.x, v2.x, v3.0.0, and v3.1.0 data files.
+
+#### New Features
+
+| Feature | Description |
+|---------|-------------|
+| **`CompactMemory()` / `CompactMemoryAsync()`** | Flushes all dirty pages to disk and evicts every loaded page from memory on demand, minimizing the working-set footprint. Exposed on `QuiverSet<T>` (per-collection) and as `CompactAllMemoryAsync()` on `QuiverDbContext` (all collections at once). No-op in `FullMemory` mode. Vector index structures are unaffected. |
+
+---
+
 ### What's New in 3.1.0
 
-> **File Format Compatibility**: v3.1.0 is fully backward-compatible with v1.x, v2.x, and v3.0.0 data files. All three storage formats (JSON / XML / Binary) and WAL files can be loaded without any migration.
+> **File Format Compatibility**: v3.1.0 is fully backward-compatible with v1.x, v2.x, and v3.0.0 data files.
 
 #### Breaking Changes
 
@@ -2762,6 +2774,7 @@ public class SearchService
 | `SaveAsync(path?)` | `Task` | Async full save of all collections to disk (also clears WAL when enabled) |
 | `SaveChangesAsync()` | `Task` | Only append unpersisted changes to WAL file, O(Δ) (equivalent to `SaveAsync` when WAL is not enabled) |
 | `CompactAsync()` | `Task` | Create full snapshot + clear WAL (equivalent to `SaveAsync`) |
+| `CompactAllMemoryAsync()` | `Task` | Flush all dirty pages and evict all loaded pages from memory across every `QuiverSet` in the context. No-op for `FullMemory` collections. |
 | `LoadAsync(path?)` | `Task` | Async load snapshot + replay WAL (silently returns if file doesn't exist) |
 | `Dispose()` | `void` | Synchronous disposal (no save) |
 | `DisposeAsync()` | `ValueTask` | Async disposal (WAL mode calls `SaveChangesAsync`, otherwise calls `SaveAsync`) |
@@ -2775,6 +2788,8 @@ public class SearchService
 | `Count` | `int` | Entity count (read lock protected, thread-safe) |
 | `VectorFields` | `IReadOnlyDictionary<string, int>` | Read-only mapping of vector field name → dimensions (lazily cached) |
 | `IsLazyLoading` | `bool` | Whether the set is running in LRU page-cache mode |
+| `CompactMemory()` | `void` | Flush dirty pages + evict all loaded pages from memory. No-op in `FullMemory` mode. |
+| `CompactMemoryAsync()` | `Task` | Async version of `CompactMemory()`, offloaded to thread pool. |
 
 #### Enumeration
 

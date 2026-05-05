@@ -1,50 +1,51 @@
 namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
-/// 向量数据的存储抽象。将向量的所有权从索引实现中剥离，
-/// 使索引仅管理拓扑结构（图/树/倒排列表），向量数据由此接口的实现统一管理。
+/// Storage abstraction for vector data. Separates vector ownership from index implementations,
+/// allowing indices to manage only topological structure (graph/tree/inverted list)
+/// while vector data is managed uniformly by implementations of this interface.
 /// <para>
-/// 当前实现：<see cref="HeapVectorStore"/>——向量驻留在 GC 托管堆上。
+/// Current implementation: <see cref="HeapVectorStore"/> — vectors reside on the GC managed heap.
 /// </para>
 /// </summary>
 /// <seealso cref="IVectorIndex"/>
 internal interface IVectorStore : IDisposable
 {
-    /// <summary>当前存储的向量数量。</summary>
+    /// <summary>Current number of stored vectors.</summary>
     int Count { get; }
 
     /// <summary>
-    /// 存储一个向量，与指定的内部 ID 关联。
-    /// <para>实现决定数据的物理存放位置（GC 堆 / mmap 区域）。</para>
+    /// Stores a vector associated with the specified internal ID.
+    /// <para>The implementation decides the physical storage location (GC heap / mmap region).</para>
     /// </summary>
-    /// <param name="id">内部 ID，由 <c>QuiverSet._nextId</c> 分配。</param>
-    /// <param name="vector">向量数据。调用方保证维度正确且已完成归一化（如需要）。</param>
+    /// <param name="id">Internal ID, allocated by <c>QuiverSet._nextId</c>.</param>
+    /// <param name="vector">Vector data. The caller guarantees the correct dimension and normalization (if required).</param>
     void Store(int id, ReadOnlySpan<float> vector);
 
     /// <summary>
-    /// 按内部 ID 获取向量的只读视图。
+    /// Returns a read-only view of the vector for the specified internal ID.
     /// <para>
-    /// 返回的 <see cref="ReadOnlySpan{T}"/> 生命周期由实现决定：
-    /// 返回的 <see cref="ReadOnlySpan{T}"/> 指向 GC 堆上的 <c>float[]</c>，GC 回收前有效。
-    /// 调用方应在读锁内同步使用，不应长期持有。
+    /// The lifetime of the returned <see cref="ReadOnlySpan{T}"/> is determined by the implementation:
+    /// it points to a <c>float[]</c> on the GC heap and is valid until the GC collects it.
+    /// Callers should use it synchronously within a read lock and must not hold it long-term.
     /// </para>
     /// </summary>
-    /// <param name="id">内部 ID。</param>
-    /// <returns>向量数据的只读视图。</returns>
+    /// <param name="id">Internal ID.</param>
+    /// <returns>A read-only view of the vector data.</returns>
     ReadOnlySpan<float> Get(int id);
 
-    /// <summary>是否包含指定 ID 的向量。</summary>
+    /// <summary>Returns whether a vector with the specified ID exists.</summary>
     bool Contains(int id);
 
-    /// <summary>移除指定 ID 的向量。ID 不存在时静默返回。</summary>
+    /// <summary>Removes the vector with the specified ID. Silently returns if the ID does not exist.</summary>
     void Remove(int id);
 
-    /// <summary>清空所有向量数据。</summary>
+    /// <summary>Clears all vector data.</summary>
     void Clear();
 
     /// <summary>
-    /// 获取所有已存储的内部 ID 集合。
-    /// <para>供索引遍历使用（如 FlatIndex 暴力搜索需遍历全部 ID）。</para>
+    /// Gets all stored internal IDs.
+    /// <para>Used by indices for traversal (e.g., FlatIndex brute-force search needs to iterate all IDs).</para>
     /// </summary>
     IEnumerable<int> Ids { get; }
 }

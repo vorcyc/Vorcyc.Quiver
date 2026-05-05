@@ -1,10 +1,11 @@
 namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
-/// 基于 GC 托管堆的向量存储。行为等同重构前各索引内部的 <c>Dictionary&lt;int, float[]&gt;</c>。
+/// GC-managed heap-based vector store. Behavior is equivalent to the <c>Dictionary&lt;int, float[]&gt;</c>
+/// that each index previously maintained internally.
 /// <para>
-/// 所有向量以 <c>float[]</c> 形式驻留在托管堆上，GC 全权管理生命周期。
-/// 适合中小规模数据集（实体数 &lt; 50 万），搜索延迟最低。
+/// All vectors reside on the managed heap as <c>float[]</c> arrays; the GC fully manages their lifetime.
+/// Suitable for small-to-medium datasets (fewer than 500,000 entities) with the lowest search latency.
 /// </para>
 /// </summary>
 /// <seealso cref="IVectorStore"/>
@@ -34,5 +35,5 @@ internal sealed class HeapVectorStore : IVectorStore
     public void Clear() => _vectors.Clear();
 
     /// <inheritdoc />
-    public void Dispose() { /* GC 管理，无需手动释放 */ }
+    public void Dispose() { /* GC-managed; no manual release needed */ }
 }

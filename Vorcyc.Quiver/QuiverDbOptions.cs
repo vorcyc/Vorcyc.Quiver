@@ -1,15 +1,15 @@
 ﻿namespace Vorcyc.Quiver;
 
 /// <summary>
-/// 向量数据库的全局配置选项。
+/// Global configuration options for the vector database.
 /// <para>
-/// 通过此类可以控制数据库的存储路径、默认距离度量方式和各项功能开关。
-/// 在创建 <see cref="QuiverDbContext"/> 时传入。
-/// 数据库始终使用紧凑二进制格式（QDB v3）持久化，若需要可读格式请使用
-/// <see cref="QuiverDbContext.ExportAsync"/> 导出为 JSON 或 XML。
+/// Use this class to control the database storage path, default distance metric, and various feature flags.
+/// Pass an instance to <see cref="QuiverDbContext"/> during construction.
+/// The database always persists using the compact binary format (QDB v3).
+/// Use <see cref="QuiverDbContext.ExportAsync"/> to export to a human-readable JSON or XML format if needed.
 /// </para>
 /// <example>
-/// 典型用法：
+/// Typical usage:
 /// <code>
 /// var options = new QuiverDbOptions
 /// {
@@ -25,104 +25,105 @@
 public class QuiverDbOptions
 {
     /// <summary>
-    /// 数据库文件的存储目录路径。
+    /// The directory path where database files are stored.
     /// <para>
-    /// 若为 <see langword="null"/> 或未设置，则使用内存模式（不持久化）。
-    /// 目录不存在时会自动创建。
+    /// When <see langword="null"/> or not set, the database operates in memory-only mode (no persistence).
+    /// The directory is created automatically if it does not exist.
     /// </para>
     /// </summary>
-    /// <value>绝对或相对文件系统路径，默认为 <see langword="null"/>。</value>
+    /// <value>An absolute or relative file system path. Default is <see langword="null"/>.</value>
     public string? DatabasePath { get; set; }
 
     /// <summary>
-    /// 默认的向量距离度量方式，用于衡量向量之间的相似度。
+    /// The default vector distance metric used to measure similarity between vectors.
     /// <para>
-    /// 当 <see cref="QuiverSet{T}"/> 未显式指定度量时，将使用此默认值。
-    /// 可选值参见 <see cref="DistanceMetric"/>。
+    /// Used when a <see cref="QuiverSet{T}"/> does not explicitly specify a metric.
+    /// See <see cref="DistanceMetric"/> for available values.
     /// </para>
     /// </summary>
-    /// <value>默认为 <see cref="DistanceMetric.Cosine"/>（余弦相似度）。</value>
+    /// <value>Default is <see cref="DistanceMetric.Cosine"/> (cosine similarity).</value>
     public DistanceMetric DefaultMetric { get; set; } = DistanceMetric.Cosine;
 
-    // ── WAL（Write-Ahead Log）增量持久化配置 ──
+    // ── WAL (Write-Ahead Log) incremental persistence configuration ──
 
     /// <summary>
-    /// 是否启用 WAL 增量持久化。启用后：
+    /// Whether to enable WAL incremental persistence. When enabled:
     /// <list type="bullet">
-    ///   <item><see cref="QuiverDbContext.SaveChangesAsync"/> 仅将变更追加到 WAL 文件，复杂度 O(Δ)</item>
-    ///   <item><see cref="QuiverDbContext.SaveAsync"/> 创建全量快照并清空 WAL</item>
-    ///   <item>WAL 记录数超过 <see cref="WalCompactionThreshold"/> 时自动执行全量快照</item>
-    ///   <item>加载时先读取快照，再回放 WAL 中的增量变更</item>
+    ///   <item><see cref="QuiverDbContext.SaveChangesAsync"/> appends only changes to the WAL file, O(Δ) complexity.</item>
+    ///   <item><see cref="QuiverDbContext.SaveAsync"/> creates a full snapshot and clears the WAL.</item>
+    ///   <item>When the WAL record count exceeds <see cref="WalCompactionThreshold"/>, a full snapshot is triggered automatically.</item>
+    ///   <item>At load time, the snapshot is read first, then WAL incremental changes are replayed.</item>
     /// </list>
     /// <para>
-    /// 未启用时，<see cref="QuiverDbContext.SaveChangesAsync"/> 行为等同于 <see cref="QuiverDbContext.SaveAsync"/>。
+    /// When disabled, <see cref="QuiverDbContext.SaveChangesAsync"/> behaves identically to <see cref="QuiverDbContext.SaveAsync"/>.
     /// </para>
     /// </summary>
-    /// <value>默认为 <see langword="false"/>。</value>
+    /// <value>Default is <see langword="false"/>.</value>
     public bool EnableWal { get; set; }
 
     /// <summary>
-    /// WAL 记录数量达到此阈值时自动触发压缩（创建全量快照 + 清空 WAL）。
+    /// When the WAL record count reaches this threshold, compaction is triggered automatically
+    /// (creates a full snapshot and clears the WAL).
     /// <para>
-    /// 过大的 WAL 会增加加载时的回放时间和磁盘占用。
-    /// 推荐范围：1,000~100,000，取决于单条记录的大小（向量维度）和对加载速度的要求。
+    /// A very large WAL increases replay time at load and disk usage.
+    /// Recommended range: 1,000–100,000, depending on the size of each record (vector dimensions) and load speed requirements.
     /// </para>
     /// </summary>
-    /// <value>默认为 10,000 条记录。</value>
+    /// <value>Default is 10,000 records.</value>
     public int WalCompactionThreshold { get; set; } = 10_000;
 
     /// <summary>
-    /// WAL 写入后是否立即执行 <c>fsync</c> 将数据刷新到物理磁盘。
+    /// Whether to call <c>fsync</c> after each WAL write to flush data to physical disk.
     /// <list type="bullet">
-    ///   <item><see langword="true"/>：最强持久性保证，进程崩溃或断电后数据不丢失。写入延迟约增加 ~1ms。</item>
-    ///   <item><see langword="false"/>：依赖操作系统缓冲区刷新，性能更好，但断电时可能丢失最近的少量变更。</item>
+    ///   <item><see langword="true"/>: Strongest durability guarantee; data is safe after a process crash or power failure. Adds ~1ms write latency.</item>
+    ///   <item><see langword="false"/>: Relies on OS buffer flushing for better performance, but recent changes may be lost on power failure.</item>
     /// </list>
     /// </summary>
-    /// <value>默认为 <see langword="true"/>（最强持久性）。</value>
+    /// <value>Default is <see langword="true"/> (strongest durability).</value>
     public bool WalFlushToDisk { get; set; } = true;
 
-    // ── 实体缓存策略配置 ──
+    // ── Entity cache strategy configuration ──
 
     /// <summary>
-    /// 实体对象（<c>TEntity</c>）的内存缓存策略。
+    /// In-memory cache strategy for entity objects (<c>TEntity</c>).
     /// <para>
     /// <list type="bullet">
-    ///   <item><see cref="EntityCacheMode.FullMemory"/>（默认）：所有实体常驻内存字典，访问延迟最低，与旧版行为一致。</item>
-    ///   <item><see cref="EntityCacheMode.LazyPaging"/>：实体按页按需加载，LRU 策略淘汰冷页，内存上限可控。
-    ///   适用于实体对象本身占用内存较大或数据集超大（百万级）的场景。
-    ///   要求设置 <see cref="DatabasePath"/>。</item>
+    ///   <item><see cref="EntityCacheMode.FullMemory"/> (default): All entities reside in an in-memory dictionary; lowest access latency, identical to prior behavior.</item>
+    ///   <item><see cref="EntityCacheMode.LazyPaging"/>: Entities are loaded page-by-page on demand with LRU eviction; memory usage is bounded.
+    ///   Suitable for large entity objects or very large datasets (millions of entries).
+    ///   Requires <see cref="DatabasePath"/> to be set.</item>
     /// </list>
     /// </para>
     /// <para>
-    /// <b>注意</b>：向量索引结构（HNSW/IVF 等）不受此设置影响，始终常驻内存以保证搜索性能。
+    /// <b>Note</b>: Vector index structures (HNSW/IVF etc.) are not affected by this setting and always remain in memory for search performance.
     /// </para>
     /// </summary>
-    /// <value>默认为 <see cref="EntityCacheMode.FullMemory"/>。</value>
+    /// <value>Default is <see cref="EntityCacheMode.FullMemory"/>.</value>
     public EntityCacheMode EntityCache { get; set; } = EntityCacheMode.FullMemory;
 
     /// <summary>
-    /// 懒加载模式下，每个 <see cref="QuiverSet{TEntity}"/> 在内存中最多保留的页数。
-    /// 超出时使用 LRU 策略淘汰最久未使用的冷页（脏页先写回磁盘）。
+    /// In lazy-loading mode, the maximum number of pages kept in memory per <see cref="QuiverSet{TEntity}"/>.
+    /// When exceeded, the least recently used cold pages are evicted (dirty pages are written back to disk first).
     /// <para>
-    /// 实际内存占用上限约为：<c>MaxCachedPages × PageSize × 单实体内存大小</c>。
+    /// Approximate memory upper bound: <c>MaxCachedPages × PageSize × per-entity memory size</c>.
     /// </para>
     /// </summary>
-    /// <value>默认为 16 页。</value>
+    /// <value>Default is 16 pages.</value>
     public int MaxCachedPages { get; set; } = 16;
 
     /// <summary>
-    /// 懒加载模式下每个分页最多容纳的实体数量。
-    /// 页越大则加载粒度越粗（单次 I/O 读取更多数据），页越小则内存更精细可控。
-    /// 推荐范围：128 ~ 2048。
+    /// Maximum number of entities per page in lazy-loading mode.
+    /// Larger pages provide coarser loading granularity (more data per I/O); smaller pages give finer memory control.
+    /// Recommended range: 128–2048.
     /// </summary>
-    /// <value>默认为 512 条实体/页。</value>
+    /// <value>Default is 512 entities per page.</value>
     public int PageSize { get; set; } = 512;
 
     /// <summary>
-    /// 验证选项组合的合法性。在 <see cref="QuiverDbContext"/> 构造时调用。
+    /// Validates the option combination. Called during <see cref="QuiverDbContext"/> construction.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// <see cref="EntityCache"/> 为 <see cref="EntityCacheMode.LazyPaging"/> 但未设置 <see cref="DatabasePath"/> 时抛出。
+    /// Thrown when <see cref="EntityCache"/> is <see cref="EntityCacheMode.LazyPaging"/> but <see cref="DatabasePath"/> is not set.
     /// </exception>
     internal void Validate()
     {

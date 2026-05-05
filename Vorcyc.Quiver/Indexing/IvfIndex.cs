@@ -4,103 +4,103 @@ using Vorcyc.Quiver.Similarity;
 namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
-/// IVF（Inverted File Index）倒排文件索引：基于 K-Means 聚类的近似最近邻搜索。
+/// IVF (Inverted File Index): cluster-based approximate nearest-neighbor search using K-Means.
 /// <para>
-/// <b>核心思想</b>：先用 K-Means 将向量空间划分为 K 个 Voronoi 单元（聚类），
-/// 每个聚类维护一个倒排列表（属于该聚类的向量 ID 列表）。
-/// 搜索时只扫描与查询向量最近的 nProbe 个聚类，大幅减少计算量。
+/// <b>Core idea</b>: divides the vector space into K Voronoi cells (clusters) using K-Means;
+/// each cluster maintains an inverted list (the IDs of vectors assigned to that cluster).
+/// At search time, only the nProbe clusters closest to the query vector are scanned, greatly reducing computation.
 /// </para>
 /// <para>
-/// <b>性能特征</b>：
+/// <b>Performance characteristics</b>:
 /// <list type="bullet">
-///   <item>构建复杂度：O(n × k × d × iter)，n=向量数，k=聚类数，d=维度，iter=迭代次数</item>
-///   <item>搜索复杂度：O(k × d + nProbe × n/k × d)，远小于暴力搜索的 O(n × d)</item>
-///   <item>空间复杂度：O(n × d + k × d)，原始向量 + 聚类质心</item>
+///   <item>Build complexity: O(n × k × d × iter), n=vectors, k=clusters, d=dimensions, iter=iterations</item>
+///   <item>Search complexity: O(k × d + nProbe × n/k × d), far less than brute-force O(n × d)</item>
+///   <item>Space complexity: O(n × d + k × d), original vectors + cluster centroids</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>参数调优指南</b>：
+/// <b>Parameter tuning guide</b>:
 /// <list type="bullet">
-///   <item><c>numClusters</c>：聚类数。默认为 0 时自动取 √n。增大减少每个聚类的向量数但增加质心比较开销</item>
-///   <item><c>numProbes</c>：搜索时探测的聚类数。增大提高召回率但减慢搜索。推荐 1~20</item>
+///   <item><c>numClusters</c>: number of clusters. When 0, defaults to √n automatically. Larger values reduce per-cluster vector count but increase centroid comparison overhead.</item>
+///   <item><c>numProbes</c>: number of clusters probed during search. Larger values improve recall but slow search. Recommended: 1–20.</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>延迟构建 + 自动重建</b>：索引在首次搜索时构建（惰性），
-/// 当数据量增长超过上次构建时的 <see cref="RebuildRatio"/> 倍（1.5x）时自动标记需要重建。
+/// <b>Lazy build + auto-rebuild</b>: the index is built on the first search (lazily).
+/// When the dataset grows beyond <see cref="RebuildRatio"/> × (1.5×) the size at the last build, the index is automatically marked for rebuild.
 /// </para>
 /// </summary>
 internal sealed class IvfIndex<TSim> : IVectorIndex
     where TSim : struct, ISimilarity<float>
 {
     // ──────────────────────────────────────────────────────────────
-    // 算法参数
+    // Algorithm parameters
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>向量数据存储，由外部注入。</summary>
+    /// <summary>Vector data store, injected externally.</summary>
     private readonly IVectorStore _vectorStore;
 
     /// <summary>
-    /// 搜索时探测的聚类数量。值越大召回率越高，但搜索越慢。
-    /// 设为 k（聚类总数）时等价于暴力搜索。
+    /// Number of clusters to probe during search. Larger values improve recall but slow search.
+    /// Setting this equal to k (total clusters) is equivalent to brute-force search.
     /// </summary>
     private readonly int _numProbes;
 
     /// <summary>
-    /// 聚类数量。为 0 时在 <see cref="Build"/> 中自动取 <c>√n</c>。
-    /// 构建后固定为实际使用的值。
+    /// Number of clusters. When 0, automatically set to <c>√n</c> in <see cref="Build"/>.
+    /// Fixed to the actual value used after construction.
     /// </summary>
     private int _numClusters;
 
     // ──────────────────────────────────────────────────────────────
-    // ID 跟踪
+    // ID tracking
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>索引中已注册的内部 ID 集合。向量数据由 <see cref="_vectorStore"/> 管理。</summary>
+    /// <summary>Set of internal IDs registered in the index. Vector data is managed by <see cref="_vectorStore"/>.</summary>
     private readonly HashSet<int> _ids = [];
 
     // ──────────────────────────────────────────────────────────────
-    // 聚类结构（由 Build() 构建）
+    // Cluster structure (built by Build())
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// K-Means 聚类质心数组。<c>_centroids[i]</c> 为第 i 个聚类的中心向量。
-    /// 搜索时先计算查询向量与所有质心的相似度，选最近的 nProbe 个聚类探测。
+    /// K-Means centroid array. <c>_centroids[i]</c> is the centroid vector for cluster i.
+    /// At search time, the query vector's similarity to all centroids is computed; the nProbe nearest clusters are probed.
     /// </summary>
     private float[][] _centroids = [];
 
     /// <summary>
-    /// 倒排列表数组。<c>_invertedLists[i]</c> 存储分配到第 i 个聚类的所有向量内部 ID。
-    /// 搜索时遍历选中聚类的倒排列表，计算精确相似度。
+    /// Inverted list array. <c>_invertedLists[i]</c> stores the internal IDs of all vectors assigned to cluster i.
+    /// During search, the selected clusters' inverted lists are traversed to compute exact similarity.
     /// </summary>
     private List<int>[] _invertedLists = [];
 
-    /// <summary>索引是否已构建。首次搜索时触发构建，数据量增长过大时标记为 false 触发重建。</summary>
+    /// <summary>Whether the index has been built. Triggered on the first search; set to false when data grows too large, forcing a rebuild.</summary>
     private bool _isBuilt;
 
     // ──────────────────────────────────────────────────────────────
-    // 自动重建控制
+    // Auto-rebuild control
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>上次构建索引时的向量数量。用于与当前数量对比判断是否需要重建。</summary>
+    /// <summary>Number of vectors at the time of the last build. Used to compare against the current count to decide whether a rebuild is needed.</summary>
     private int _lastBuildCount;
 
     /// <summary>
-    /// 自动重建阈值倍率。当 <c>当前向量数 &gt; 上次构建时向量数 × RebuildRatio</c> 时，
-    /// 标记索引需要重建。1.5 表示数据量增长 50% 后触发。
+    /// Auto-rebuild ratio. When <c>current vector count &gt; last build count × RebuildRatio</c>,
+    /// the index is marked for rebuild. 1.5 means a rebuild is triggered after 50% data growth.
     /// </summary>
     private const double RebuildRatio = 1.5;
 
     /// <summary>
-    /// 创建 IVF 索引实例。
+    /// Creates an IVF index instance.
     /// </summary>
-    /// <param name="vectorStore">向量数据存储。</param>
+    /// <param name="vectorStore">Vector data store.</param>
     /// <param name="numClusters">
-    /// 聚类数量。为 0 时自动取 <c>√n</c>（n 为首次构建时的向量数量）。
-    /// 数据量大时建议显式指定。
+    /// Number of clusters. When 0, automatically set to <c>√n</c> (n = vector count at first build time).
+    /// Explicitly specifying a value is recommended for large datasets.
     /// </param>
     /// <param name="numProbes">
-    /// 搜索时探测的聚类数量。默认 10。增大可提高召回率，减小可提高速度。
+    /// Number of clusters to probe during search. Default: 10. Larger values improve recall; smaller values improve speed.
     /// </param>
     public IvfIndex(IVectorStore vectorStore, int numClusters = 0, int numProbes = 10)
     {
@@ -113,15 +113,15 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
     public int Count => _ids.Count;
 
     /// <summary>
-    /// 将指定 ID 注册到索引。新增后检查是否需要标记重建
-    /// （当数据量超过上次构建时的 <see cref="RebuildRatio"/> 倍时触发）。
+    /// Registers the specified ID in the index. After adding, checks whether a rebuild is needed
+    /// (triggered when the data size exceeds <see cref="RebuildRatio"/> times the count at the last build).
     /// </summary>
-    /// <param name="id">内部 ID，向量已存入 <see cref="IVectorStore"/>。</param>
+    /// <param name="id">Internal ID; the vector has already been stored in <see cref="IVectorStore"/>.</param>
     public void Add(int id)
     {
         _ids.Add(id);
 
-        // 数据量增长超过阈值时，标记需要重建聚类
+        // Mark for rebuild when data growth exceeds the threshold
         if (_isBuilt && _ids.Count > _lastBuildCount * RebuildRatio)
             _isBuilt = false;
     }
@@ -130,7 +130,7 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
     public void Remove(int id) => _ids.Remove(id);
 
     /// <inheritdoc />
-    /// <remarks>清空 ID 集合、聚类质心和倒排列表，重置构建标志。</remarks>
+    /// <remarks>Clears the ID set, cluster centroids, and inverted lists; resets the build flag.</remarks>
     public void Clear()
     {
         _ids.Clear();
@@ -140,57 +140,58 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 搜索与查询向量最相似的 Top-K 个结果。算法流程：
+    /// Searches for the Top-K results most similar to the query vector. Algorithm steps:
     /// <list type="number">
-    ///   <item>计算查询向量与所有 K 个聚类质心的相似度</item>
-    ///   <item>选取相似度最高的 nProbe 个聚类</item>
-    ///   <item>遍历选中聚类的倒排列表，计算精确相似度</item>
-    ///   <item>从候选结果中选取 Top-K 返回</item>
+    ///   <item>Compute the similarity between the query vector and all K cluster centroids</item>
+    ///   <item>Select the nProbe clusters with the highest similarity</item>
+    ///   <item>Traverse the inverted lists of the selected clusters and compute exact similarity</item>
+    ///   <item>Select the Top-K results from the candidates and return</item>
     /// </list>
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="topK">返回结果数量上限。</param>
-    /// <returns>按相似度降序排列的 (内部ID, 相似度) 列表。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="topK">Maximum number of results to return.</param>
+    /// <returns>A list of (internal ID, similarity) pairs sorted by similarity in descending order.</returns>
     public List<(int Id, float Similarity)> Search(float[] query, int topK)
     {
         if (_ids.Count == 0) return [];
 
-        // 确保聚类索引已构建（惰性构建 / 数据增长后自动重建）
+        // Ensure the cluster index is built (lazy build / auto-rebuild after data growth)
         EnsureBuilt();
 
-        // 步骤 1：计算查询向量与所有聚类质心的相似度
+        // Step 1: compute similarity between the query vector and all cluster centroids
         var clusterSims = new (int Index, float Similarity)[_centroids.Length];
         for (int i = 0; i < _centroids.Length; i++)
             clusterSims[i] = (i, TSim.Compute(query, _centroids[i]));
 
-        // 步骤 2：选取最相似的 nProbe 个聚类进行探测
+        // Step 2: select the nProbe most similar clusters to probe
         var probeClusters = clusterSims
             .OrderByDescending(c => c.Similarity)
             .Take(Math.Min(_numProbes, _centroids.Length));
 
-        // 步骤 3：遍历选中聚类的倒排列表，计算与每个向量的精确相似度
+        // Step 3: traverse the inverted lists of the selected clusters and compute exact similarity
         var results = new List<(int Id, float Similarity)>();
         foreach (var (clusterIdx, _) in probeClusters)
         {
             foreach (var id in _invertedLists[clusterIdx])
             {
-                // 跳过已被删除但倒排列表中可能残留的无效 ID
+                // Skip IDs that may have been deleted but still remain in the inverted list
                 if (!_vectorStore.Contains(id)) continue;
                 results.Add((id, TSim.Compute(query, _vectorStore.Get(id))));
             }
         }
 
-        // 步骤 4：从候选集中选取 Top-K
+        // Step 4: select Top-K from the candidates
         return results.OrderByDescending(r => r.Similarity).Take(topK).ToList();
     }
 
     /// <summary>
-    /// 搜索所有相似度不低于阈值的向量。
-    /// 为提高召回率，探测的聚类数扩大为 <c>nProbe × 2</c>（阈值搜索需要覆盖更多区域）。
+    /// Searches for all vectors whose similarity is at or above the given threshold.
+    /// The number of probed clusters is doubled to <c>nProbe × 2</c> to improve recall
+    /// (threshold searches need to cover a wider area to avoid missing results).
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="threshold">相似度下限（含）。</param>
-    /// <returns>满足阈值条件的 (内部ID, 相似度) 列表，无特定排序。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="threshold">Similarity lower bound (inclusive).</param>
+    /// <returns>A list of (internal ID, similarity) pairs meeting the threshold condition, in no particular order.</returns>
     public List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold)
     {
         if (_ids.Count == 0) return [];
@@ -198,15 +199,15 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
 
         var results = new List<(int Id, float Similarity)>();
 
-        // 阈值搜索扩大探测范围（2 倍 nProbe），降低因聚类划分导致的漏检
+        // Threshold search doubles the probe count (2× nProbe) to reduce missed results from cluster boundary effects
         var probeClusters = Math.Min(_numProbes * 2, _centroids.Length);
 
-        // 计算查询向量与所有质心的相似度
+        // Compute similarity between query and all centroids
         var clusterSims = new (int Index, float Similarity)[_centroids.Length];
         for (int i = 0; i < _centroids.Length; i++)
             clusterSims[i] = (i, TSim.Compute(query, _centroids[i]));
 
-        // 探测最近的聚类，仅收集超过阈值的结果
+        // Probe the nearest clusters; collect only results exceeding the threshold
         foreach (var (clusterIdx, _) in clusterSims
             .OrderByDescending(c => c.Similarity).Take(probeClusters))
         {
@@ -220,10 +221,11 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
         return results;
     }
 
-    #region K-Means 聚类（SIMD 加速）
+    #region K-Means clustering (SIMD-accelerated)
 
     /// <summary>
-    /// 确保聚类索引已构建。首次搜索或数据量增长触发重建标志后，调用 <see cref="Build"/> 构建。
+    /// Ensures the cluster index is built. Calls <see cref="Build"/> when triggered by the first search
+    /// or after a data-growth rebuild flag is set.
     /// </summary>
     private void EnsureBuilt()
     {
@@ -232,44 +234,44 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 构建 K-Means 聚类索引。完整流程：
+    /// Builds the K-Means cluster index. Full steps:
     /// <list type="number">
-    ///   <item>确定聚类数 K（显式指定或自动取 √n）</item>
-    ///   <item>使用 K-Means++ 初始化质心（比随机初始化收敛更快、聚类质量更高）</item>
-    ///   <item>迭代 Lloyd 算法：分配 → 更新质心，直到收敛或达到最大迭代次数</item>
-    ///   <item>构建倒排列表：将每个向量分配到最近的聚类</item>
+    ///   <item>Determine K (explicitly specified or auto = √n)</item>
+    ///   <item>Initialize centroids using K-Means++ (converges faster and produces higher-quality clusters than random initialization)</item>
+    ///   <item>Iterate Lloyd's algorithm: assign → update centroids, until convergence or max iterations</item>
+    ///   <item>Build inverted lists: assign each vector to its nearest cluster</item>
     /// </list>
     /// <para>
-    /// 质心更新使用 <see cref="TensorPrimitives.Add"/> 和 <see cref="TensorPrimitives.Divide"/>
-    /// 实现 SIMD 加速的向量累加和均值计算。
+    /// Centroid updates use <see cref="TensorPrimitives.Add"/> and <see cref="TensorPrimitives.Divide"/>
+    /// for SIMD-accelerated vector accumulation and mean computation.
     /// </para>
     /// </summary>
     private void Build()
     {
         if (_ids.Count == 0) return;
 
-        // ── 步骤 1：确定聚类数 K ──
-        // 未显式指定（为 0）时自动取 √n，在搜索速度和聚类粒度间取平衡
+        // ── Step 1: determine K ──
+        // When not explicitly specified (0), default to √n to balance search speed and cluster granularity
         var k = _numClusters > 0
             ? _numClusters
             : Math.Max(1, (int)Math.Sqrt(_ids.Count));
         _numClusters = k;
 
-        // 提取所有 ID 和向量（从 store 读取并物化为数组，供 K-Means 迭代使用）
+        // Extract all IDs and vectors (materialized from the store for K-Means iteration)
         var allIds = _ids.ToList();
         var allVectors = allIds.Select(id => _vectorStore.Get(id).ToArray()).ToList();
         var dim = allVectors[0].Length;
 
-        // ── 步骤 2：K-Means++ 质心初始化 ──
+        // ── Step 2: K-Means++ centroid initialization ──
         _centroids = KMeansPlusPlusInit(allVectors, k, dim);
 
-        // ── 步骤 3：Lloyd 迭代（分配 + 更新质心）──
-        var assignments = new int[allVectors.Count]; // assignments[i] = 第 i 个向量所属的聚类编号
+        // ── Step 3: Lloyd iterations (assign + update centroids) ──
+        var assignments = new int[allVectors.Count]; // assignments[i] = cluster index for vector i
         const int maxIterations = 50;
 
         for (int iter = 0; iter < maxIterations; iter++)
         {
-            // 分配阶段：每个向量分配到最近的聚类质心
+            // Assignment phase: assign each vector to its nearest centroid
             bool changed = false;
             for (int i = 0; i < allVectors.Count; i++)
             {
@@ -281,16 +283,16 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
                 }
             }
 
-            // 所有分配均未变化 → 已收敛，提前终止
+            // All assignments unchanged → converged; stop early
             if (!changed) break;
 
-            // 更新阶段：重新计算每个聚类的质心（所有成员向量的均值）
-            var sums = new float[k][];   // 各聚类的向量累加和
-            var counts = new int[k];     // 各聚类的成员数量
+            // Update phase: recompute each cluster's centroid (mean of all member vectors)
+            var sums = new float[k][];   // Cumulative vector sums per cluster
+            var counts = new int[k];     // Member count per cluster
             for (int c = 0; c < k; c++)
                 sums[c] = new float[dim];
 
-            // 累加阶段：使用 TensorPrimitives.Add 实现 SIMD 加速的向量加法
+            // Accumulation phase: SIMD-accelerated vector addition via TensorPrimitives.Add
             for (int i = 0; i < allVectors.Count; i++)
             {
                 var c = assignments[i];
@@ -298,34 +300,34 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
                 TensorPrimitives.Add(sums[c], allVectors[i], sums[c]);
             }
 
-            // 除以成员数得到均值：使用 TensorPrimitives.Divide 实现 SIMD 加速
+            // Divide by member count to get the mean: SIMD-accelerated via TensorPrimitives.Divide
             for (int c = 0; c < k; c++)
             {
-                // 空聚类保留原质心不变（避免除以零）
+                // Leave empty clusters' centroids unchanged (avoid division by zero)
                 if (counts[c] == 0) continue;
                 TensorPrimitives.Divide(sums[c], (float)counts[c], _centroids[c]);
             }
         }
 
-        // ── 步骤 4：构建倒排列表 ──
+        // ── Step 4: build inverted lists ──
         _invertedLists = new List<int>[k];
         for (int c = 0; c < k; c++)
             _invertedLists[c] = [];
 
-        // 将每个向量的内部 ID 添加到其所属聚类的倒排列表中
+        // Add each vector's internal ID to its cluster's inverted list
         for (int i = 0; i < allIds.Count; i++)
             _invertedLists[assignments[i]].Add(allIds[i]);
 
         _isBuilt = true;
-        _lastBuildCount = _ids.Count; // 记录本次构建时的数据量，用于判断是否需要重建
+        _lastBuildCount = _ids.Count; // Record the current count for future rebuild comparisons
     }
 
     /// <summary>
-    /// 查找与给定向量最相似的聚类质心，返回其索引。
-    /// 线性扫描所有质心（质心数 K 通常较小，无需更复杂的加速结构）。
+    /// Finds the cluster centroid most similar to the given vector and returns its index.
+    /// Linear scan over all centroids (K is usually small, so no additional acceleration structure is needed).
     /// </summary>
-    /// <param name="vector">待分配的向量。</param>
-    /// <returns>最近聚类质心的索引（0-based）。</returns>
+    /// <param name="vector">The vector to assign.</param>
+    /// <returns>The index (0-based) of the nearest cluster centroid.</returns>
     private int FindNearestCentroid(float[] vector)
     {
         int best = 0;
@@ -339,56 +341,56 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// K-Means++ 质心初始化算法。比随机初始化产生更分散的初始质心，
-    /// 加速收敛并减少陷入局部最优的概率。
+    /// K-Means++ centroid initialization. Produces more spread-out initial centroids than random initialization,
+    /// accelerating convergence and reducing the chance of falling into a local optimum.
     /// <para>
-    /// 算法流程：
+    /// Algorithm steps:
     /// <list type="number">
-    ///   <item>随机选择第 1 个质心</item>
-    ///   <item>对每个数据点，计算其到最近已选质心的距离²</item>
-    ///   <item>以距离²为权重进行轮盘赌采样，距离越远被选中概率越高</item>
-    ///   <item>重复 2~3 直到选满 K 个质心</item>
+    ///   <item>Randomly select the first centroid</item>
+    ///   <item>For each data point, compute its squared distance to the nearest already-selected centroid</item>
+    ///   <item>Use squared distance as a weight for roulette-wheel sampling: points farther away have a higher probability of being selected</item>
+    ///   <item>Repeat steps 2–3 until K centroids have been selected</item>
     /// </list>
     /// </para>
     /// <para>
-    /// 使用固定种子（42）保证可复现性。距离计算使用 <see cref="TensorPrimitives.Distance"/> SIMD 加速。
+    /// Uses a fixed seed (42) for reproducibility. Distance computation uses <see cref="TensorPrimitives.Distance"/> for SIMD acceleration.
     /// </para>
     /// </summary>
-    /// <param name="vectors">所有向量数据。</param>
-    /// <param name="k">要选择的质心数量。</param>
-    /// <param name="dim">向量维度。</param>
-    /// <returns>初始化后的质心数组（已克隆，不引用原始数据）。</returns>
+    /// <param name="vectors">All vector data.</param>
+    /// <param name="k">Number of centroids to select.</param>
+    /// <param name="dim">Vector dimension.</param>
+    /// <returns>The initialized centroid array (cloned; does not reference the original data).</returns>
     private static float[][] KMeansPlusPlusInit(List<float[]> vectors, int k, int dim)
     {
-        var rng = new Random(42);  // 固定种子保证可复现性
+        var rng = new Random(42);  // Fixed seed for reproducibility
         var centroids = new float[k][];
 
-        // 步骤 1：随机选择第 1 个质心
+        // Step 1: randomly select the first centroid
         centroids[0] = (float[])vectors[rng.Next(vectors.Count)].Clone();
 
-        // distances[i] = 第 i 个向量到最近已选质心的距离²
+        // distances[i] = squared distance from vector i to its nearest already-selected centroid
         var distances = new float[vectors.Count];
 
-        // 步骤 2~3：依次选择剩余 k-1 个质心
+        // Steps 2–3: select the remaining k-1 centroids
         for (int c = 1; c < k; c++)
         {
-            // 计算每个数据点到最近已选质心的距离²
+            // Compute each data point's squared distance to the nearest already-selected centroid
             float totalDist = 0;
             for (int i = 0; i < vectors.Count; i++)
             {
                 float minDist = float.MaxValue;
                 for (int j = 0; j < c; j++)
                 {
-                    // 使用 TensorPrimitives.Distance 计算欧几里得距离（SIMD 加速）
+                    // Use TensorPrimitives.Distance for SIMD-accelerated Euclidean distance
                     var d = TensorPrimitives.Distance(vectors[i], centroids[j]);
-                    minDist = Math.Min(minDist, d * d);  // 取距离²（避免开根号后再平方）
+                    minDist = Math.Min(minDist, d * d);  // Squared distance (avoid unnecessary sqrt then re-square)
                 }
                 distances[i] = minDist;
                 totalDist += minDist;
             }
 
-            // 轮盘赌采样：距离²越大 → 被选为下一个质心的概率越高
-            // 这确保新质心尽量远离已有质心，提高聚类分散性
+            // Roulette-wheel sampling: larger squared distance → higher probability of being selected as the next centroid
+            // This ensures new centroids are as far as possible from existing ones, improving cluster spread
             var threshold = rng.NextSingle() * totalDist;
             float cumulative = 0;
             for (int i = 0; i < vectors.Count; i++)
@@ -401,7 +403,7 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
                 }
             }
 
-            // 极端情况兜底：所有距离为 0（例如重复向量）时随机选择
+            // Fallback for edge cases: when all distances are 0 (e.g., duplicate vectors), select randomly
             centroids[c] ??= (float[])vectors[rng.Next(vectors.Count)].Clone();
         }
         return centroids;

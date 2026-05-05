@@ -4,34 +4,34 @@ using Vorcyc.Quiver.Similarity;
 namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
-/// 平坦索引（暴力搜索）：遍历所有向量计算相似度，返回 Top-K 结果。
+/// Flat index (brute-force search): iterates over all vectors to compute similarity and returns the Top-K results.
 /// <para>
-/// <b>精确搜索</b>：结果无近似误差，召回率 100%。适合数据量较小或需要精确结果的场景。
+/// <b>Exact search</b>: results have no approximation error; 100% recall. Suitable for small datasets or scenarios requiring exact results.
 /// </para>
 /// <para>
-/// <b>自动并行化</b>：当向量数量超过 <see cref="ParallelThreshold"/>（10,000）时，
-/// 自动切换到 <see cref="Parallel.ForEach"/> 多线程搜索，充分利用多核 CPU。
+/// <b>Automatic parallelization</b>: when the number of vectors exceeds <see cref="ParallelThreshold"/> (10,000),
+/// automatically switches to <see cref="Parallel.ForEach"/> multi-threaded search to fully utilize multi-core CPUs.
 /// </para>
 /// <para>
-/// 时间复杂度：O(n × d)，其中 n 为向量数量，d 为向量维度。
+/// Time complexity: O(n × d), where n is the number of vectors and d is the vector dimension.
 /// </para>
 /// <para>
-/// 类型参数 <typeparamref name="TSim"/> 在 JIT 编译期特化，
-/// <c>TSim.Compute()</c> 被内联为直接调用（无虚分派、无委托间接调用）。
+/// The type parameter <typeparamref name="TSim"/> is specialized at JIT compile time;
+/// <c>TSim.Compute()</c> is inlined as a direct call (no virtual dispatch, no delegate indirection).
 /// </para>
 /// </summary>
-/// <typeparam name="TSim">相似度算法类型，须为 struct 以启用 JIT 特化。</typeparam>
+/// <typeparam name="TSim">Similarity algorithm type; must be a struct to enable JIT specialization.</typeparam>
 internal sealed class FlatIndex<TSim> : IVectorIndex
     where TSim : struct, ISimilarity<float>
 {
     private readonly IVectorStore _vectorStore;
 
-    /// <summary>索引中已注册的内部 ID 集合。向量数据由 <see cref="_vectorStore"/> 管理。</summary>
+    /// <summary>Set of internal IDs registered in the index. Vector data is managed by <see cref="_vectorStore"/>.</summary>
     private readonly HashSet<int> _ids = [];
 
     /// <summary>
-    /// 并行搜索阈值。超过此数量时使用 <see cref="Parallel.ForEach"/> 多线程搜索。
-    /// 低于此值时顺序遍历更快（避免线程调度和 ConcurrentBag 的同步开销）。
+    /// Parallel search threshold. When the count exceeds this value, <see cref="Parallel.ForEach"/> multi-threaded search is used.
+    /// Below this value, sequential traversal is faster (avoids thread-scheduling and <see cref="System.Collections.Concurrent.ConcurrentBag{T}"/> synchronization overhead).
     /// </summary>
     private const int ParallelThreshold = 10_000;
 
@@ -53,29 +53,29 @@ internal sealed class FlatIndex<TSim> : IVectorIndex
     public void Clear() => _ids.Clear();
 
     /// <summary>
-    /// 搜索与查询向量最相似的 Top-K 个结果。
-    /// 根据当前向量数量自动选择顺序搜索或并行搜索策略。
+    /// Searches for the Top-K results most similar to the query vector.
+    /// Automatically selects sequential or parallel search strategy based on the current vector count.
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="topK">返回结果数量上限。</param>
-    /// <returns>按相似度降序排列的 (内部ID, 相似度) 列表。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="topK">Maximum number of results to return.</param>
+    /// <returns>A list of (internal ID, similarity) pairs sorted by similarity in descending order.</returns>
     public List<(int Id, float Similarity)> Search(float[] query, int topK)
     {
         if (_ids.Count == 0) return [];
 
-        // 小数据量顺序遍历更快，大数据量并行计算更优
+        // Sequential traversal is faster for small datasets; parallel computation is better for large ones
         return _ids.Count > ParallelThreshold
             ? ParallelSearchCore(query, topK)
             : SequentialSearchCore(query, topK);
     }
 
     /// <summary>
-    /// 搜索所有相似度不低于阈值的向量。结果数量不固定，取决于数据分布。
-    /// 始终使用顺序遍历（阈值搜索通常需要检查全部数据，并行收益有限）。
+    /// Searches for all vectors whose similarity is at or above the given threshold. The number of results varies with data distribution.
+    /// Always uses sequential traversal (threshold search typically requires scanning all data; parallel gains are limited).
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="threshold">相似度下限（含），低于此值的结果被过滤。</param>
-    /// <returns>满足阈值条件的 (内部ID, 相似度) 列表，无特定排序。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="threshold">Similarity lower bound (inclusive); results below this value are filtered out.</param>
+    /// <returns>A list of (internal ID, similarity) pairs meeting the threshold condition, in no particular order.</returns>
     public List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold)
     {
         var results = new List<(int Id, float Similarity)>();
@@ -89,8 +89,8 @@ internal sealed class FlatIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 顺序搜索：单线程遍历所有向量计算相似度，LINQ 排序取 Top-K。
-    /// 适合向量数量 ≤ <see cref="ParallelThreshold"/> 的场景，避免多线程调度开销。
+    /// Sequential search: single-threaded traversal over all vectors to compute similarity, then LINQ sort to take Top-K.
+    /// Suitable when the vector count is ≤ <see cref="ParallelThreshold"/>, avoiding multi-thread scheduling overhead.
     /// </summary>
     private List<(int Id, float Similarity)> SequentialSearchCore(float[] query, int topK)
     {
@@ -102,16 +102,16 @@ internal sealed class FlatIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 并行搜索：使用 <see cref="Parallel.ForEach"/> 将相似度计算分摊到多个线程池线程。
-    /// 适合向量数量 &gt; <see cref="ParallelThreshold"/> 的场景。
+    /// Parallel search: uses <see cref="Parallel.ForEach"/> to distribute similarity computation across multiple thread-pool threads.
+    /// Suitable when the vector count is &gt; <see cref="ParallelThreshold"/>.
     /// <para>
-    /// 使用 <see cref="ConcurrentBag{T}"/> 收集结果，线程安全但有轻微同步开销。
-    /// 最终排序在单线程上执行。
+    /// Results are collected via <see cref="ConcurrentBag{T}"/>, which is thread-safe but incurs slight synchronization overhead.
+    /// Final sorting is performed on a single thread.
     /// </para>
     /// </summary>
     private List<(int Id, float Similarity)> ParallelSearchCore(float[] query, int topK)
     {
-        // 拍摄 ID 快照供并行遍历（避免跨线程枚举 HashSet）
+        // Take a snapshot of IDs for parallel traversal (avoids enumerating HashSet across threads)
         var ids = _ids.ToArray();
         var results = new ConcurrentBag<(int Id, float Similarity)>();
 

@@ -3,115 +3,115 @@
 namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
-/// HNSW（Hierarchical Navigable Small World）索引：分层可导航小世界图，用于近似最近邻搜索。
+/// HNSW (Hierarchical Navigable Small World) index: a layered navigable small-world graph for approximate nearest-neighbor search.
 /// <para>
-/// <b>核心思想</b>：构建一个多层的近邻图。高层稀疏、跨度大，用于快速定位目标区域；
-/// 低层稠密、连接多，用于精细搜索。类似"高速公路 → 省道 → 乡道"的分层导航。
+/// <b>Core idea</b>: builds a multi-layer proximity graph. Upper layers are sparse with wide reach for fast region location;
+/// lower layers are dense with many connections for fine-grained search — analogous to highway → arterial → local road navigation.
 /// </para>
 /// <para>
-/// <b>性能特征</b>：
+/// <b>Performance characteristics</b>:
 /// <list type="bullet">
-///   <item>搜索复杂度：O(log n)，n 为向量数量</item>
-///   <item>插入复杂度：O(log n) × efConstruction</item>
-///   <item>空间复杂度：O(n × M)，M 为每层最大连接数</item>
+///   <item>Search complexity: O(log n), n = number of vectors</item>
+///   <item>Insert complexity: O(log n) × efConstruction</item>
+///   <item>Space complexity: O(n × M), M = maximum connections per layer</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>参数调优指南</b>：
+/// <b>Parameter tuning guide</b>:
 /// <list type="bullet">
-///   <item><c>M</c>：每层最大邻居数。增大提高召回率但增加内存和构建时间。推荐 12~48</item>
-///   <item><c>efConstruction</c>：构建时的候选集大小。增大提高图质量但减慢插入。推荐 100~500</item>
-///   <item><c>efSearch</c>：搜索时的候选集大小。增大提高召回率但减慢搜索。须 ≥ topK</item>
+///   <item><c>M</c>: max neighbors per layer. Larger values improve recall but increase memory and build time. Recommended: 12–48.</item>
+///   <item><c>efConstruction</c>: candidate set size during construction. Larger values improve graph quality but slow insertion. Recommended: 100–500.</item>
+///   <item><c>efSearch</c>: candidate set size during search. Larger values improve recall but slow search. Must be ≥ topK.</item>
 /// </list>
 /// </para>
 /// </summary>
-/// <seealso href="https://arxiv.org/abs/1603.09320">论文：Efficient and robust approximate nearest neighbor search using HNSW graphs</seealso>
-/// <typeparam name="TSim">相似度算法类型，须为 struct 以启用 JIT 特化。</typeparam>
+/// <seealso href="https://arxiv.org/abs/1603.09320">Paper: Efficient and robust approximate nearest neighbor search using HNSW graphs</seealso>
+/// <typeparam name="TSim">Similarity algorithm type; must be a struct to enable JIT specialization.</typeparam>
 internal sealed class HnswIndex<TSim> : IVectorIndex
     where TSim : struct, ISimilarity<float>
 {
     // ──────────────────────────────────────────────────────────────
-    // 算法参数（构造后不变）
+    // Algorithm parameters (immutable after construction)
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>向量数据存储，由外部注入。节点不再持有向量，需要时通过此接口读取。</summary>
+    /// <summary>Vector data store, injected externally. Nodes no longer hold vectors; they are read via this interface when needed.</summary>
     private readonly IVectorStore _vectorStore;
 
     /// <summary>
-    /// 每层最大邻居连接数（第 1 层及以上）。
-    /// 原论文参数 M，控制图的稠密度。更大的 M = 更高的召回率 + 更多内存。
+    /// Maximum number of neighbor connections per layer (layer 1 and above).
+    /// Paper parameter M; controls graph density. Larger M = higher recall + more memory.
     /// </summary>
     private readonly int _m;
 
     /// <summary>
-    /// 第 0 层（最底层）的最大连接数，默认为 <c>M × 2</c>。
-    /// 底层承载所有节点，需要更多连接来保证搜索质量。
+    /// Maximum connections for layer 0 (the bottom layer); defaults to <c>M × 2</c>.
+    /// The bottom layer hosts all nodes and needs more connections to maintain search quality.
     /// </summary>
     private readonly int _mMax0;
 
     /// <summary>
-    /// 构建阶段的候选集大小。插入新节点时，在每层搜索 efConstruction 个候选邻居。
-    /// 越大 → 图质量越高（更准确的邻居选择），但插入越慢。
+    /// Candidate set size during the build phase. When inserting a new node, <c>efConstruction</c> neighbor candidates are searched per layer.
+    /// Larger value → higher graph quality (more accurate neighbor selection), but slower insertion.
     /// </summary>
     private readonly int _efConstruction;
 
     /// <summary>
-    /// 层级随机数的缩放因子：<c>1 / ln(M)</c>。
-    /// 用于生成指数衰减的层级分布，保证高层节点稀疏、低层节点稠密。
+    /// Level-randomization scale factor: <c>1 / ln(M)</c>.
+    /// Produces an exponentially decaying level distribution, keeping upper layers sparse and lower layers dense.
     /// </summary>
     private readonly double _levelMultiplier;
 
     /// <summary>
-    /// 搜索阶段的候选集大小。运行时可调，实际使用 <c>max(efSearch, topK)</c>。
-    /// 越大 → 召回率越高，但搜索越慢。
+    /// Candidate set size during the search phase. Adjustable at runtime; actual value used is <c>max(efSearch, topK)</c>.
+    /// Larger value → higher recall, but slower search.
     /// </summary>
     private int _efSearch;
 
     // ──────────────────────────────────────────────────────────────
-    // 图结构
+    // Graph structure
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>内部 ID → HNSW 节点的映射。每个节点包含向量数据和各层的邻居列表。</summary>
+    /// <summary>Mapping of internal ID → HNSW node. Each node stores neighbor lists per layer.</summary>
     private readonly Dictionary<int, HnswNode> _nodes = [];
 
     /// <summary>
-    /// 入口点节点 ID。搜索从此节点开始，逐层向下导航。
-    /// 空图时为 -1。始终指向最高层级的节点之一。
+    /// Entry point node ID. Search starts from this node and navigates down layer by layer.
+    /// -1 when the graph is empty. Always points to one of the nodes at the highest layer.
     /// </summary>
     private int _entryPointId = -1;
 
-    /// <summary>图中当前最高层级。空图时为 -1。</summary>
+    /// <summary>Current maximum layer in the graph. -1 when the graph is empty.</summary>
     private int _maxLevel = -1;
 
-    /// <summary>层级随机数生成器，用于 <see cref="RandomLevel"/> 生成新节点的层级。</summary>
+    /// <summary>Level RNG used by <see cref="RandomLevel"/> to generate a new node's level.</summary>
     private readonly Random _rng = new();
 
-    #region 节点定义
+    #region Node definition
 
     /// <summary>
-    /// HNSW 图中的单个节点，存储内部 ID 和各层级的邻居连接。
-    /// 向量数据由 <see cref="IVectorStore"/> 统一管理，节点不再持有向量引用。
+    /// A single node in the HNSW graph, storing an internal ID and per-layer neighbor connections.
+    /// Vector data is managed centrally by <see cref="IVectorStore"/>; the node holds no vector reference.
     /// </summary>
-    /// <param name="id">节点的内部 ID（与 QuiverSet 的内部 ID 一致）。</param>
+    /// <param name="id">The node's internal ID (matches the internal ID used by QuiverSet).</param>
     /// <param name="maxLevel">
-    /// 该节点存在的最高层级。节点存在于第 0 层到第 maxLevel 层。
-    /// 由 <see cref="RandomLevel"/> 随机生成，服从指数衰减分布。
+    /// The highest layer this node belongs to. The node exists from layer 0 through layer maxLevel.
+    /// Generated randomly by <see cref="RandomLevel"/> following an exponential decay distribution.
     /// </param>
     private sealed class HnswNode(int id, int maxLevel)
     {
-        /// <summary>节点的内部 ID。</summary>
+        /// <summary>The node's internal ID.</summary>
         public readonly int Id = id;
 
-        /// <summary>该节点存在的最高层级。</summary>
+        /// <summary>The highest layer this node belongs to.</summary>
         public readonly int MaxLevel = maxLevel;
 
         /// <summary>
-        /// 各层级的邻居 ID 列表。<c>Neighbors[level]</c> 存储该节点在第 <c>level</c> 层的邻居。
-        /// 第 0 层最多 <see cref="_mMax0"/> 个邻居，其他层最多 <see cref="_m"/> 个。
+        /// Neighbor ID lists per layer. <c>Neighbors[level]</c> stores this node's neighbors at layer <c>level</c>.
+        /// Layer 0 allows up to <see cref="_mMax0"/> neighbors; all other layers allow up to <see cref="_m"/>.
         /// </summary>
         public readonly List<int>[] Neighbors = InitNeighbors(maxLevel);
 
-        /// <summary>初始化各层级的空邻居列表。</summary>
+        /// <summary>Initializes empty neighbor lists for each layer.</summary>
         private static List<int>[] InitNeighbors(int maxLevel)
         {
             var arr = new List<int>[maxLevel + 1];
@@ -123,53 +123,53 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     #endregion
 
     /// <summary>
-    /// 创建 HNSW 索引实例。
+    /// Creates an HNSW index instance.
     /// </summary>
-    /// <param name="vectorStore">向量数据存储。</param>
+    /// <param name="vectorStore">Vector data store.</param>
     /// <param name="m">
-    /// 每层最大邻居数（第 1 层及以上）。第 0 层自动设为 <c>m × 2</c>。默认 16。
+    /// Maximum neighbors per layer (layer 1 and above). Layer 0 is automatically set to <c>m × 2</c>. Default: 16.
     /// </param>
-    /// <param name="efConstruction">构建阶段候选集大小。默认 200。</param>
-    /// <param name="efSearch">搜索阶段候选集大小。默认 50。可通过 <see cref="EfSearch"/> 属性运行时调整。</param>
+    /// <param name="efConstruction">Candidate set size during construction. Default: 200.</param>
+    /// <param name="efSearch">Candidate set size during search. Default: 50. Adjustable at runtime via the <see cref="EfSearch"/> property.</param>
     public HnswIndex(
         IVectorStore vectorStore,
         int m = 16, int efConstruction = 200, int efSearch = 50)
     {
         _vectorStore = vectorStore;
         _m = m;
-        _mMax0 = m * 2;           // 底层连接数加倍，论文推荐值
+        _mMax0 = m * 2;           // Layer-0 connections doubled, as recommended by the paper
         _efConstruction = efConstruction;
         _efSearch = efSearch;
-        _levelMultiplier = 1.0 / Math.Log(m);  // 层级缩放因子：ml = 1/ln(M)
+        _levelMultiplier = 1.0 / Math.Log(m);  // Level scaling factor: ml = 1/ln(M)
     }
 
-    /// <summary>搜索阶段的候选集大小。运行时可调，无需重建索引。</summary>
+    /// <summary>Candidate set size during search. Adjustable at runtime without rebuilding the index.</summary>
     public int EfSearch { get => _efSearch; set => _efSearch = value; }
 
     /// <inheritdoc />
     public int Count => _nodes.Count;
 
-    #region 插入操作
+    #region Insert
 
     /// <summary>
-    /// 将新向量插入 HNSW 图。算法流程：
+    /// Inserts a new vector into the HNSW graph. Algorithm steps:
     /// <list type="number">
-    ///   <item>随机生成新节点的层级 <c>l</c>（指数衰减分布）</item>
-    ///   <item>从入口点开始，在高于 <c>l</c> 的层级做贪心搜索，快速定位目标区域</item>
-    ///   <item>在第 <c>l</c> 层到第 0 层，用 efConstruction 候选集搜索最佳邻居</item>
-    ///   <item>建立双向连接（新节点 ↔ 邻居），超出最大连接数时裁剪</item>
-    ///   <item>若新节点层级超过当前最高层，更新入口点</item>
+    ///   <item>Randomly generate the new node's level <c>l</c> (exponential decay distribution)</item>
+    ///   <item>Starting from the entry point, perform greedy search on layers above <c>l</c> to quickly locate the target region</item>
+    ///   <item>On layers <c>l</c> down to 0, search for the best neighbors using an efConstruction candidate set</item>
+    ///   <item>Establish bidirectional connections (new node ↔ neighbors); prune when the connection limit is exceeded</item>
+    ///   <item>If the new node's level exceeds the current maximum, update the entry point</item>
     /// </list>
     /// </summary>
-    /// <param name="id">内部 ID，向量已存入 <see cref="IVectorStore"/>。</param>
+    /// <param name="id">Internal ID; the vector has already been written to <see cref="IVectorStore"/>.</param>
     public void Add(int id)
     {
-        // 步骤 1：随机生成层级（指数衰减分布，大多数节点在第 0 层）
+        // Step 1: randomly generate the level (exponential decay distribution; most nodes end up on layer 0)
         var level = RandomLevel();
         var node = new HnswNode(id, level);
         _nodes[id] = node;
 
-        // 空图时，第一个节点直接成为入口点
+        // For an empty graph, the first node becomes the entry point directly
         if (_entryPointId == -1)
         {
             _entryPointId = id;
@@ -177,13 +177,12 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
             return;
         }
 
-        // 从 store 读取向量用于建图（ReadOnlySpan 在同步上下文中安全使用）
+        // Read the vector from the store for graph construction (ReadOnlySpan is safe in a synchronous context)
         var vector = _vectorStore.Get(id);
 
         var ep = _entryPointId;
 
-        // 步骤 2：在高于新节点层级的层上做贪心搜索（ef=1），快速靠近目标区域
-        // 类似"高速公路"导航，跨度大但精度低
+        // Step 2: greedy search (ef=1) on layers above the new node's level — fast highway-style navigation, wide span but low precision
         for (int l = _maxLevel; l > level; l--)
         {
             var nearest = SearchLayer(vector, ep, 1, l);
@@ -191,16 +190,16 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
                 ep = nearest.MaxBy(x => x.Similarity).Id;
         }
 
-        // 步骤 3-4：在新节点存在的每一层建立邻居连接
+        // Steps 3-4: establish neighbor connections on each layer the new node occupies
         for (int l = Math.Min(level, _maxLevel); l >= 0; l--)
         {
-            // 第 0 层允许更多连接（mMax0 = M×2），其他层为 M
+            // Layer 0 allows more connections (mMax0 = M×2); other layers use M
             var mMax = l == 0 ? _mMax0 : _m;
 
-            // 用 efConstruction 大小的候选集搜索当前层的最佳邻居
+            // Search the best neighbors at the current layer using an efConstruction candidate set
             var candidates = SearchLayer(vector, ep, _efConstruction, l);
 
-            // 选择相似度最高的 mMax 个作为邻居
+            // Select the top-mMax neighbors by similarity
             var selected = candidates
                 .OrderByDescending(x => x.Similarity)
                 .Take(mMax)
@@ -208,25 +207,25 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
 
             foreach (var neighbor in selected)
             {
-                // 建立双向连接：新节点 → 邻居
+                // Bidirectional link: new node → neighbor
                 node.Neighbors[l].Add(neighbor.Id);
 
                 if (!_nodes.TryGetValue(neighbor.Id, out var neighborNode)) continue;
 
-                // 建立双向连接：邻居 → 新节点
+                // Bidirectional link: neighbor → new node
                 neighborNode.Neighbors[l].Add(id);
 
-                // 邻居连接数超限时，裁剪保留相似度最高的连接
+                // Prune the neighbor's connections when the limit is exceeded, keeping the highest-similarity ones
                 if (neighborNode.Neighbors[l].Count > mMax)
                     PruneConnections(neighborNode, l, mMax);
             }
 
-            // 用当前层最佳邻居作为下一层的入口点
+            // Use the best neighbor at the current layer as the entry point for the next layer
             if (selected.Count > 0)
                 ep = selected[0].Id;
         }
 
-        // 步骤 5：新节点层级超过当前最高层，更新全局入口点
+        // Step 5: if the new node's level exceeds the current maximum, update the global entry point
         if (level > _maxLevel)
         {
             _entryPointId = id;
@@ -235,41 +234,42 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 裁剪节点在指定层级的邻居连接。保留相似度最高的 <paramref name="maxConnections"/> 个邻居，
-    /// 移除已被删除的无效节点引用。
+    /// Prunes a node's neighbor connections at the specified layer. Retains the top <paramref name="maxConnections"/> neighbors by similarity
+    /// and removes references to already-deleted (invalid) nodes.
     /// </summary>
-    /// <param name="node">需要裁剪连接的节点。</param>
-    /// <param name="level">要裁剪的层级。</param>
-    /// <param name="maxConnections">该层允许的最大连接数。</param>
+    /// <param name="node">The node whose connections are to be pruned.</param>
+    /// <param name="level">The layer to prune.</param>
+    /// <param name="maxConnections">Maximum number of connections allowed at this layer.</param>
     private void PruneConnections(HnswNode node, int level, int maxConnections)
     {
-        // 物化为 float[] —— ReadOnlySpan 是 ref struct，不能在 lambda 中捕获
+        // Materialize to float[] — ReadOnlySpan is a ref struct and cannot be captured in a lambda
         var nodeVector = _vectorStore.Get(node.Id).ToArray();
         node.Neighbors[level] = [.. node.Neighbors[level]
-            .Where(nId => _nodes.ContainsKey(nId))                                   // 过滤已删除的无效邻居
-            .Select(nId => (Id: nId, Sim: TSim.Compute(nodeVector, _vectorStore.Get(nId))))  // 计算相似度
-            .OrderByDescending(x => x.Sim)                                           // 按相似度降序
-            .Take(maxConnections)                                                     // 保留 Top-N
+            .Where(nId => _nodes.ContainsKey(nId))                                   // Filter already-deleted invalid neighbors
+            .Select(nId => (Id: nId, Sim: TSim.Compute(nodeVector, _vectorStore.Get(nId))))  // Compute similarity
+            .OrderByDescending(x => x.Sim)                                           // Sort by similarity descending
+            .Take(maxConnections)                                                     // Keep top N
             .Select(x => x.Id)];
     }
 
     #endregion
 
-    #region 删除操作
+    #region Delete
 
     /// <summary>
-    /// 从图中移除节点。采用惰性策略：仅删除节点本身，不清理其他节点中的反向引用。
-    /// 残留的无效引用会在后续搜索和裁剪操作中被自动跳过和清理。
+    /// Removes a node from the graph using a lazy strategy: only the node itself is deleted;
+    /// back-references in other nodes are not cleaned up.
+    /// Residual invalid references are automatically skipped and cleaned up during subsequent search and pruning operations.
     /// <para>
-    /// 若删除的是入口点，则重新选择层级最高的节点作为新入口点。
+    /// If the entry point is deleted, the node with the highest level is elected as the new entry point.
     /// </para>
     /// </summary>
-    /// <param name="id">要删除的节点内部 ID。</param>
+    /// <param name="id">Internal ID of the node to remove.</param>
     public void Remove(int id)
     {
         if (!_nodes.Remove(id)) return;
 
-        // 图为空时重置入口点
+        // Reset entry point when graph becomes empty
         if (_nodes.Count == 0)
         {
             _entryPointId = -1;
@@ -277,7 +277,7 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
             return;
         }
 
-        // 删除的是入口点时，选择层级最高的节点作为新入口点
+        // When the deleted node was the entry point, elect the node with the highest level
         if (id == _entryPointId)
         {
             var best = _nodes.Values.MaxBy(n => n.MaxLevel)!;
@@ -296,27 +296,27 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
 
     #endregion
 
-    #region 搜索操作
+    #region Search
 
     /// <summary>
-    /// 搜索与查询向量最相似的 Top-K 个节点。算法流程：
+    /// Searches for the Top-K nodes most similar to the query vector. Algorithm steps:
     /// <list type="number">
-    ///   <item>从入口点出发，在高层（第 maxLevel 层到第 1 层）做贪心搜索（ef=1），快速定位</item>
-    ///   <item>在第 0 层（最底层）用 <c>max(efSearch, topK)</c> 大小的候选集做精细搜索</item>
-    ///   <item>从候选集中选取相似度最高的 topK 个结果返回</item>
+    ///   <item>Starting from the entry point, perform greedy search (ef=1) on layers maxLevel down to layer 1 for fast targeting</item>
+    ///   <item>Perform fine-grained search on layer 0 (the bottom layer) using a candidate set of size <c>max(efSearch, topK)</c></item>
+    ///   <item>Select the topK results with the highest similarity from the candidate set</item>
     /// </list>
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="topK">返回结果数量上限。</param>
-    /// <returns>按相似度降序排列的 (内部ID, 相似度) 列表。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="topK">Maximum number of results to return.</param>
+    /// <returns>A list of (internal ID, similarity) pairs sorted by similarity in descending order.</returns>
     public List<(int Id, float Similarity)> Search(float[] query, int topK)
     {
         if (_nodes.Count == 0) return [];
 
         var ep = _entryPointId;
 
-        // 阶段 1：高层贪心导航（ef=1，每层只保留最优节点）
-        // 从最高层向下逐层搜索，快速逼近目标区域
+        // Phase 1: greedy navigation on upper layers (ef=1, keep only the best node per layer)
+        // Search down from the highest layer, quickly converging on the target region
         for (int l = _maxLevel; l > 0; l--)
         {
             var nearest = SearchLayer(query, ep, 1, l);
@@ -324,11 +324,11 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
                 ep = nearest.MaxBy(x => x.Similarity).Id;
         }
 
-        // 阶段 2：底层精细搜索（ef = max(efSearch, topK)）
-        // 在第 0 层用较大的候选集做广度优先搜索
+        // Phase 2: fine-grained search on the bottom layer (ef = max(efSearch, topK))
+        // Breadth-first search on layer 0 with a larger candidate set
         var results = SearchLayer(query, ep, Math.Max(_efSearch, topK), 0);
 
-        // 从候选集中选取 Top-K
+        // Select Top-K from the candidate set
         return results
             .OrderByDescending(x => x.Similarity)
             .Take(topK)
@@ -336,81 +336,81 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 搜索所有相似度不低于阈值的节点。
-    /// 通过扩大搜索范围（ef = 数据量的 10%）来提高召回率，再过滤低于阈值的结果。
+    /// Searches for all nodes whose similarity is at or above the given threshold.
+    /// Expands the search range (ef = 10% of dataset size) to improve recall, then filters results below the threshold.
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="threshold">相似度下限（含）。</param>
-    /// <returns>满足阈值条件的 (内部ID, 相似度) 列表。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="threshold">Similarity lower bound (inclusive).</param>
+    /// <returns>A list of (internal ID, similarity) pairs meeting the threshold condition.</returns>
     public List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold)
     {
-        // 扩大 ef 以提高召回率，但不超过总数据量的 10%
+        // Expand ef to improve recall, capped at 10% of the total dataset size
         var ef = Math.Max(_efSearch, _nodes.Count / 10);
         return Search(query, ef).Where(x => x.Similarity >= threshold).ToList();
     }
 
     #endregion
 
-    #region 核心算法 — SearchLayer（单层束搜索）
+    #region Core algorithm — SearchLayer (single-layer beam search)
 
     /// <summary>
-    /// 在指定层级执行束搜索（beam search），返回最多 <paramref name="ef"/> 个最相似的节点。
+    /// Performs beam search on the specified layer, returning up to <paramref name="ef"/> most similar nodes.
     /// <para>
-    /// 这是 HNSW 的核心算法。使用两个优先队列：
+    /// This is the core HNSW algorithm. It uses two priority queues:
     /// <list type="bullet">
-    ///   <item><b>candidates</b>（最大堆，按负相似度排序）：待探索的候选节点，优先探索相似度最高的</item>
-    ///   <item><b>results</b>（最小堆，按相似度排序）：当前最优结果集，堆顶为相似度最低的（最差的）</item>
+    ///   <item><b>candidates</b> (max-heap via negated similarity): candidate nodes to explore, prioritizing the highest similarity</item>
+    ///   <item><b>results</b> (min-heap by similarity): current best result set; the heap top is the worst (lowest similarity) result</item>
     /// </list>
     /// </para>
     /// <para>
-    /// 终止条件：当前最佳候选的相似度低于 results 中最差结果，且 results 已满 ef 个。
-    /// 此时继续搜索不会找到更好的结果。
+    /// Termination condition: the best candidate's similarity is lower than the worst result in <c>results</c> and <c>results</c> already has <c>ef</c> entries.
+    /// At that point, no better result can be found by continuing.
     /// </para>
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="entryPointId">搜索起点节点 ID。</param>
-    /// <param name="ef">候选集大小上限。越大 → 搜索越精确，但越慢。</param>
-    /// <param name="level">搜索的图层级。</param>
-    /// <returns>最多 ef 个最相似节点的 (ID, 相似度) 列表。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="entryPointId">Starting node ID for the search.</param>
+    /// <param name="ef">Maximum candidate set size. Larger → more precise search, but slower.</param>
+    /// <param name="level">Graph layer to search.</param>
+    /// <returns>A list of up to <c>ef</c> most similar nodes as (ID, similarity) pairs.</returns>
     private List<(int Id, float Similarity)> SearchLayer(
         ReadOnlySpan<float> query, int entryPointId, int ef, int level)
     {
         if (!_nodes.TryGetValue(entryPointId, out var epNode))
             return [];
 
-        // 已访问集合，防止重复计算
+        // Visited set to prevent redundant computation
         var visited = new HashSet<int> { entryPointId };
         var epSim = TSim.Compute(query, _vectorStore.Get(epNode.Id));
 
-        // candidates：最大堆（用负相似度模拟），优先探索相似度最高的候选
+        // candidates: max-heap (simulated via negated similarity), prioritizing the highest-similarity candidate
         var candidates = new PriorityQueue<int, float>();
-        candidates.Enqueue(entryPointId, -epSim);  // 负值 → 最大堆
+        candidates.Enqueue(entryPointId, -epSim);  // Negated value → max-heap
 
-        // results：最小堆，堆顶为相似度最低的结果（便于淘汰最差的）
+        // results: min-heap; the heap top is the worst (lowest similarity) result, for easy eviction
         var results = new PriorityQueue<int, float>();
-        results.Enqueue(entryPointId, epSim);       // 正值 → 最小堆
+        results.Enqueue(entryPointId, epSim);       // Positive value → min-heap
 
         while (candidates.Count > 0)
         {
-            // 取出相似度最高的候选节点
+            // Dequeue the candidate with the highest similarity
             candidates.TryDequeue(out var currentId, out var negCurrentSim);
             var currentSim = -negCurrentSim;
 
-            // 获取 results 中最差结果的相似度
+            // Get the similarity of the worst result in results
             results.TryPeek(out _, out var worstResultSim);
 
-            // 终止条件：最佳候选 < 最差结果 且 results 已满
-            // 图的贪心特性保证此后不会找到更优结果
+            // Termination: best candidate < worst result and results is full
+            // The graph's greedy property guarantees no better result can be found after this point
             if (currentSim < worstResultSim && results.Count >= ef)
                 break;
 
             if (!_nodes.TryGetValue(currentId, out var currentNode)) continue;
             if (level >= currentNode.Neighbors.Length) continue;
 
-            // 遍历当前节点在该层的所有邻居
+            // Traverse all neighbors of the current node at this layer
             foreach (var neighborId in currentNode.Neighbors[level])
             {
-                // 跳过已访问节点（HashSet.Add 返回 false 表示已存在）
+                // Skip already-visited nodes (HashSet.Add returns false if already present)
                 if (!visited.Add(neighborId)) continue;
                 if (!_nodes.ContainsKey(neighborId)) continue;
 
@@ -418,20 +418,20 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
 
                 results.TryPeek(out _, out var currentWorstSim);
 
-                // 邻居优于 results 中最差结果，或 results 未满时，加入候选和结果
+                // Add to candidates and results if neighbor is better than the worst result or results is not yet full
                 if (neighborSim > currentWorstSim || results.Count < ef)
                 {
                     candidates.Enqueue(neighborId, -neighborSim);
                     results.Enqueue(neighborId, neighborSim);
 
-                    // results 超过 ef 上限时，淘汰最差结果（最小堆堆顶）
+                    // Evict the worst result (min-heap top) when results exceeds the ef limit
                     if (results.Count > ef)
                         results.Dequeue();
                 }
             }
         }
 
-        // 将优先队列转为列表返回
+        // Convert the priority queue to a list and return
         var output = new List<(int, float)>(results.Count);
         while (results.Count > 0)
         {
@@ -444,14 +444,14 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     #endregion
 
     /// <summary>
-    /// 生成随机层级，服从指数衰减分布：<c>floor(-ln(uniform(0,1)) × ml)</c>。
+    /// Generates a random level following an exponential decay distribution: <c>floor(-ln(uniform(0,1)) × ml)</c>.
     /// <para>
-    /// 大多数节点分配在第 0 层（概率最高），高层节点呈指数衰减。
-    /// 例如 M=16 时：第 0 层 ≈ 64%，第 1 层 ≈ 23%，第 2 层 ≈ 8%，第 3 层 ≈ 3%...
-    /// 这保证了高层的稀疏性（快速跨越搜索）和底层的稠密性（精确检索）。
+    /// Most nodes are assigned to layer 0 (highest probability); upper layers decay exponentially.
+    /// For example with M=16: layer 0 ≈ 64%, layer 1 ≈ 23%, layer 2 ≈ 8%, layer 3 ≈ 3%...
+    /// This ensures sparseness in upper layers (fast wide-range search) and density in the bottom layer (precise retrieval).
     /// </para>
     /// </summary>
-    /// <returns>非负整数层级。</returns>
+    /// <returns>A non-negative integer level.</returns>
     private int RandomLevel()
     {
         return (int)(-Math.Log(1.0 - _rng.NextDouble()) * _levelMultiplier);

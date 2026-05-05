@@ -1,32 +1,36 @@
 ﻿namespace Vorcyc.Quiver;
 
 // ══════════════════════════════════════════════════════════════════
-// 特性（Attribute）定义
-// 用于在实体类的属性上声明向量数据库的元数据：主键、向量字段、索引配置。
-// QuiverSet<TEntity> 构造时通过反射扫描这些特性来自动发现和注册字段。
+// Attribute definitions
+// Used to declare vector database metadata on entity class properties:
+// primary key, vector fields, and index configuration.
+// QuiverSet<TEntity> scans these attributes via reflection during construction
+// to automatically discover and register fields.
 // ══════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// 标记属性为向量特征字段。
+/// Marks a property as a vector feature field.
 /// <para>
-/// 被标记的属性类型必须为 <c>float[]</c>，维度在编译时由 <paramref name="dimensions"/> 指定，
-/// 运行时写入向量数据库时会校验实际维度是否匹配。
+/// The marked property type must be <c>float[]</c>. The dimensionality is specified at compile time
+/// via <paramref name="dimensions"/> and is validated against the actual array length at write time.
 /// </para>
 /// <para>
-/// 一个实体类可标记多个 <see cref="QuiverVectorAttribute"/> 属性（如同时持有文本向量和图像向量），
-/// 搜索时通过 <c>vectorSelector</c> 表达式指定目标字段。
+/// An entity class may have multiple <see cref="QuiverVectorAttribute"/> properties
+/// (e.g., holding both a text embedding and an image embedding).
+/// Use the <c>vectorSelector</c> expression to specify the target field when searching.
 /// </para>
 /// </summary>
 /// <param name="dimensions">
-/// 向量维度（固定值）。写入时实际数组长度必须等于此值，否则抛出 <see cref="ArgumentException"/>。
-/// 常见值：128（轻量模型）、384（MiniLM）、768（BERT）、1536（OpenAI Ada）。
+/// The fixed vector dimensionality. The actual array length must equal this value at write time,
+/// otherwise an <see cref="ArgumentException"/> is thrown.
+/// Common values: 128 (lightweight models), 384 (MiniLM), 768 (BERT), 1536 (OpenAI Ada).
 /// </param>
 /// <param name="metric">
-/// 距离度量类型。决定相似度的计算方式。默认 <see cref="DistanceMetric.Cosine"/>。
+/// The distance metric type that determines how similarity is computed. Default is <see cref="DistanceMetric.Cosine"/>.
 /// <list type="bullet">
-///   <item><see cref="DistanceMetric.Cosine"/>：余弦相似度，适合文本/语义搜索（向量自动预归一化）</item>
-///   <item><see cref="DistanceMetric.DotProduct"/>：内积，适合已归一化的向量或最大内积搜索</item>
-///   <item><see cref="DistanceMetric.Euclidean"/>：欧几里得距离（转换为相似度），适合空间坐标</item>
+///   <item><see cref="DistanceMetric.Cosine"/>: Cosine similarity, suitable for text/semantic search (vectors are automatically pre-normalized).</item>
+///   <item><see cref="DistanceMetric.DotProduct"/>: Dot product, suitable for pre-normalized vectors or maximum inner product search.</item>
+///   <item><see cref="DistanceMetric.Euclidean"/>: Euclidean distance (converted to similarity), suitable for spatial coordinates.</item>
 /// </list>
 /// </param>
 /// <example>
@@ -44,27 +48,28 @@
 [AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
 public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = DistanceMetric.Cosine) : Attribute
 {
-    /// <summary>向量维度（固定值），运行时校验实际数组长度须与此一致。</summary>
+    /// <summary>The fixed vector dimensionality. The actual array length must match this value at write time.</summary>
     public int Dimensions { get; } = dimensions;
 
-    /// <summary>距离度量类型，决定相似度计算方式和是否启用预归一化优化。</summary>
+    /// <summary>The distance metric type that determines how similarity is computed and whether pre-normalization is enabled.</summary>
     public DistanceMetric Metric { get; } = metric;
 
     /// <summary>
-    /// 是否允许向量值为 <c>null</c>。默认 <c>false</c>（必填）。
+    /// Whether the vector value is allowed to be <c>null</c>. Default is <c>false</c> (required).
     /// <para>
-    /// 设为 <c>true</c> 时，向量为 <c>null</c> 的实体仍可写入，但不会加入该字段的索引，
-    /// 搜索该字段时也不会返回这些实体。适用于并非所有实体都具有此特征的场景
-    /// （如图片中的人脸向量——并非每张图都有人脸）。
+    /// When set to <c>true</c>, entities with a <c>null</c> vector can still be written,
+    /// but will not be added to the index for this field and will not appear in search results.
+    /// Useful when not all entities have this feature
+    /// (e.g., a face embedding — not every image contains a face).
     /// </para>
     /// </summary>
     public bool Optional { get; set; }
 
     /// <summary>
-    /// 自定义相似度计算类型。设置后忽略 <see cref="Metric"/>。
+    /// Custom similarity computation type. When set, <see cref="Metric"/> is ignored.
     /// <para>
-    /// 类型须为 <see langword="struct"/> 且实现 <see cref="Similarity.ISimilarity{T}"/>（T 为 <see cref="float"/>），
-    /// 并有公共无参构造函数。设为 <see langword="null"/>（默认）时使用 <see cref="Metric"/> 对应的内置实现。
+    /// The type must be a <see langword="struct"/> implementing <see cref="Similarity.ISimilarity{T}"/> (T is <see cref="float"/>)
+    /// with a public parameterless constructor. When <see langword="null"/> (default), the built-in implementation for <see cref="Metric"/> is used.
     /// </para>
     /// </summary>
     /// <example>
@@ -77,11 +82,11 @@ public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = Dista
 }
 
 /// <summary>
-/// 标记属性为实体主键。每个实体类必须有且仅有一个主键属性。
+/// Marks a property as the entity primary key. Each entity class must have exactly one primary key property.
 /// <para>
-/// 主键用于实体的唯一标识、去重和 <see cref="QuiverSet{TEntity}.Find"/> 查找。
-/// 支持任意类型（<c>string</c>、<c>int</c>、<c>Guid</c> 等），
-/// 但运行时会装箱为 <c>object</c> 存储在内部字典中。
+/// The primary key is used for unique identification, deduplication, and <see cref="QuiverSet{TEntity}.Find"/> lookups.
+/// Any type is supported (<c>string</c>, <c>int</c>, <c>Guid</c>, etc.),
+/// but values are boxed as <c>object</c> and stored in an internal dictionary at runtime.
 /// </para>
 /// </summary>
 /// <example>
@@ -94,21 +99,22 @@ public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = Dista
 public class QuiverKeyAttribute : Attribute;
 
 /// <summary>
-/// 配置向量字段的索引类型及其参数。可选特性——未标记时默认使用 <see cref="VectorIndexType.Flat"/> 暴力搜索。
+/// Configures the index type and its parameters for a vector field.
+/// This attribute is optional — if not present, <see cref="VectorIndexType.Flat"/> brute-force search is used by default.
 /// <para>
-/// 与 <see cref="QuiverVectorAttribute"/> 标记在同一属性上使用，为该向量字段指定索引策略。
-/// 不同的索引类型仅使用各自相关的参数，无关参数会被忽略。
+/// Used on the same property as <see cref="QuiverVectorAttribute"/> to specify the indexing strategy for that vector field.
+/// Different index types only use their relevant parameters; unrelated parameters are ignored.
 /// </para>
 /// </summary>
-/// <param name="indexType">索引类型。默认 <see cref="VectorIndexType.Flat"/>。</param>
+/// <param name="indexType">The index type. Default is <see cref="VectorIndexType.Flat"/>.</param>
 /// <example>
 /// <code>
-/// // HNSW 索引：高维向量的近似搜索首选
+/// // HNSW index: preferred for approximate search on high-dimensional vectors
 /// [QuiverVector(768)]
 /// [QuiverIndex(VectorIndexType.HNSW, M = 32, EfConstruction = 300, EfSearch = 100)]
 /// public float[] Embedding { get; set; }
 ///
-/// // IVF 索引：大数据量场景
+/// // IVF index: suitable for large-scale data scenarios
 /// [QuiverVector(128)]
 /// [QuiverIndex(VectorIndexType.IVF, NumClusters = 100, NumProbes = 15)]
 /// public float[] Feature { get; set; }
@@ -117,236 +123,239 @@ public class QuiverKeyAttribute : Attribute;
 [AttributeUsage(AttributeTargets.Property)]
 public class QuiverIndexAttribute(VectorIndexType indexType = VectorIndexType.Flat) : Attribute
 {
-    /// <summary>索引类型。决定搜索算法和性能特征。</summary>
+    /// <summary>The index type. Determines the search algorithm and performance characteristics.</summary>
     public VectorIndexType IndexType { get; } = indexType;
 
-    // ── HNSW 专用参数 ──
+    // ── HNSW-specific parameters ──
 
     /// <summary>
-    /// 每层最大邻居连接数（仅 <see cref="VectorIndexType.HNSW"/>）。
-    /// 第 0 层自动设为 <c>M × 2</c>。增大提高召回率但增加内存和构建时间。
-    /// <para>推荐范围：12~48。默认 16。</para>
+    /// Maximum number of neighbor connections per layer (HNSW only).
+    /// Layer 0 is automatically set to <c>M × 2</c>. Increasing this improves recall but uses more memory and build time.
+    /// <para>Recommended range: 12–48. Default: 16.</para>
     /// </summary>
     public int M { get; set; } = 16;
 
     /// <summary>
-    /// 构建阶段的候选集大小（仅 <see cref="VectorIndexType.HNSW"/>）。
-    /// 插入新节点时在每层搜索的候选邻居数量。越大 → 图质量越高、插入越慢。
-    /// <para>推荐范围：100~500。默认 200。</para>
+    /// Candidate set size during construction (HNSW only).
+    /// The number of candidate neighbors searched per layer when inserting a new node.
+    /// Larger values produce higher graph quality but slower insertions.
+    /// <para>Recommended range: 100–500. Default: 200.</para>
     /// </summary>
     public int EfConstruction { get; set; } = 200;
 
     /// <summary>
-    /// 搜索阶段的候选集大小（仅 <see cref="VectorIndexType.HNSW"/>）。
-    /// 越大 → 召回率越高、搜索越慢。须 ≥ topK。运行时可通过 <c>HnswIndex.EfSearch</c> 动态调整。
-    /// <para>推荐范围：50~500。默认 50。</para>
+    /// Candidate set size during search (HNSW only).
+    /// Larger values increase recall but slow down search. Must be ≥ topK.
+    /// Can be adjusted at runtime via <c>HnswIndex.EfSearch</c>.
+    /// <para>Recommended range: 50–500. Default: 50.</para>
     /// </summary>
     public int EfSearch { get; set; } = 50;
 
-    // ── IVF 专用参数 ──
+    // ── IVF-specific parameters ──
 
     /// <summary>
-    /// K-Means 聚类数量（仅 <see cref="VectorIndexType.IVF"/>）。
-    /// 为 0 时在首次构建索引时自动取 <c>√n</c>（n 为当时的向量数量）。
-    /// <para>推荐范围：√n ~ 4√n。默认 0（自动计算）。</para>
+    /// Number of K-Means clusters (IVF only).
+    /// When 0, automatically set to <c>√n</c> (where n is the number of vectors at index build time).
+    /// <para>Recommended range: √n to 4√n. Default: 0 (auto-computed).</para>
     /// </summary>
     public int NumClusters { get; set; } = 0;
 
     /// <summary>
-    /// 搜索时探测的聚类数量（仅 <see cref="VectorIndexType.IVF"/>）。
-    /// 值越大召回率越高，但搜索越慢。设为聚类总数时等价于暴力搜索。
-    /// <para>推荐范围：1~20。默认 10。</para>
+    /// Number of clusters to probe during search (IVF only).
+    /// Higher values increase recall but slow down search. Setting this equal to the total number of clusters is equivalent to brute-force search.
+    /// <para>Recommended range: 1–20. Default: 10.</para>
     /// </summary>
     public int NumProbes { get; set; } = 10;
 }
 
 // ══════════════════════════════════════════════════════════════════
-// 枚举定义
+// Enum definitions
 // ══════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// 向量索引类型。不同类型在搜索速度、精确度、内存占用之间有不同的权衡。
+/// Vector index type. Different types represent different trade-offs among search speed, accuracy, and memory usage.
 /// <list type="table">
-///   <listheader><term>类型</term><description>特征</description></listheader>
-///   <item><term>Flat</term><description>暴力搜索，100% 精确，适合小数据量（&lt;10K）</description></item>
-///   <item><term>HNSW</term><description>近似搜索，高召回率，通用首选（10K~10M）</description></item>
-///   <item><term>IVF</term><description>近似搜索，大数据量批量查询（100K+）</description></item>
-///   <item><term>KDTree</term><description>精确搜索，仅适合低维（&lt;20 维）</description></item>
+///   <listheader><term>Type</term><description>Characteristics</description></listheader>
+///   <item><term>Flat</term><description>Brute-force search, 100% exact, suitable for small datasets (&lt;10K)</description></item>
+///   <item><term>HNSW</term><description>Approximate search, high recall, general-purpose choice (10K–10M)</description></item>
+///   <item><term>IVF</term><description>Approximate search, large-scale batch queries (100K+)</description></item>
+///   <item><term>KDTree</term><description>Exact search, only effective at low dimensions (&lt;20 dims)</description></item>
 /// </list>
 /// </summary>
 public enum VectorIndexType
 {
     /// <summary>
-    /// 暴力搜索（Flat / Brute-Force）。
-    /// 遍历所有向量计算相似度，结果 100% 精确。
-    /// <para>时间复杂度：O(n × d)。超过 10,000 条数据时自动并行化。</para>
+    /// Brute-force (Flat) search.
+    /// Computes similarity against every vector; results are 100% exact.
+    /// <para>Time complexity: O(n × d). Automatically parallelized when there are more than 10,000 entries.</para>
     /// </summary>
     Flat,
 
     /// <summary>
-    /// HNSW（Hierarchical Navigable Small World）分层可导航小世界图。
-    /// 多层近邻图结构，近似搜索的通用首选。
-    /// <para>时间复杂度：O(log n)。可通过 M、efConstruction、efSearch 调优精度与速度。</para>
+    /// HNSW (Hierarchical Navigable Small World) graph.
+    /// A multi-layer proximity graph structure — the general-purpose choice for approximate search.
+    /// <para>Time complexity: O(log n). Tunable via M, efConstruction, and efSearch.</para>
     /// </summary>
     HNSW,
 
     /// <summary>
-    /// IVF（Inverted File Index）倒排文件索引。
-    /// 基于 K-Means 聚类划分向量空间，搜索时只探测最近的几个聚类。
-    /// <para>时间复杂度：O(n/k × d)。适合大数据量 + 批量查询场景。</para>
+    /// IVF (Inverted File Index).
+    /// Partitions the vector space via K-Means clustering; only the nearest clusters are probed during search.
+    /// <para>Time complexity: O(n/k × d). Best for large datasets with batch queries.</para>
     /// </summary>
     IVF,
 
     /// <summary>
-    /// KD-Tree（K-Dimensional Tree）空间二叉划分树。
-    /// 精确搜索，但仅在低维（&lt;20 维）下有效，高维退化为 O(n)。
-    /// <para>时间复杂度：O(log n)（低维），O(n)（高维）。</para>
+    /// KD-Tree (K-Dimensional Tree) spatial binary partitioning tree.
+    /// Exact search, but only effective at low dimensions (&lt;20 dims); degrades to O(n) at high dimensions.
+    /// <para>Time complexity: O(log n) (low-dim), O(n) (high-dim).</para>
     /// </summary>
     KDTree
 }
 
 /// <summary>
-/// 距离度量类型。决定向量相似度的计算方式。
+/// Distance metric type. Determines how vector similarity is computed.
 /// <para>
-/// 选择指南：
+/// Selection guide:
 /// <list type="bullet">
-///   <item><see cref="Cosine"/>：最常用，适合文本嵌入、语义搜索。方向相似性，不关心向量长度</item>
-///   <item><see cref="Euclidean"/>：适合空间坐标、物理距离。关心绝对距离</item>
-///   <item><see cref="DotProduct"/>：适合已归一化的向量或最大内积搜索（MIPS）</item>
-///   <item><see cref="Manhattan"/>：L1 距离，适合稀疏特征、推荐系统</item>
-///   <item><see cref="Chebyshev"/>：L∞ 距离，检测最大维度偏差</item>
-///   <item><see cref="Pearson"/>：皮尔逊相关，适合文本嵌入（去均值后的余弦）</item>
-///   <item><see cref="Hamming"/>：汉明距离，适合二值哈希指纹</item>
-///   <item><see cref="Jaccard"/>：广义 Jaccard，适合 BoW/TF-IDF 稀疏文本特征</item>
-///   <item><see cref="Canberra"/>：堪培拉距离，适合稀疏数据（权重敏感）</item>
+///   <item><see cref="Cosine"/>: Most common; suitable for text embeddings and semantic search. Measures directional similarity, ignoring vector magnitude.</item>
+///   <item><see cref="Euclidean"/>: Suitable for spatial coordinates and physical distances. Cares about absolute distance.</item>
+///   <item><see cref="DotProduct"/>: Suitable for pre-normalized vectors or maximum inner product search (MIPS).</item>
+///   <item><see cref="Manhattan"/>: L1 distance; suitable for sparse features and recommendation systems.</item>
+///   <item><see cref="Chebyshev"/>: L∞ distance; detects the largest per-dimension deviation.</item>
+///   <item><see cref="Pearson"/>: Pearson correlation; suitable for text embeddings (cosine after mean-centering).</item>
+///   <item><see cref="Hamming"/>: Hamming distance; suitable for binary hash fingerprints.</item>
+///   <item><see cref="Jaccard"/>: Generalized Jaccard; suitable for BoW/TF-IDF sparse text features.</item>
+///   <item><see cref="Canberra"/>: Canberra distance; suitable for sparse data (magnitude-sensitive).</item>
 /// </list>
 /// </para>
 /// </summary>
 public enum DistanceMetric
 {
     /// <summary>
-    /// 余弦相似度：<c>cos(θ) = (a·b) / (‖a‖ × ‖b‖)</c>。值域 [-1, 1]。
+    /// Cosine similarity: <c>cos(θ) = (a·b) / (‖a‖ × ‖b‖)</c>. Range: [-1, 1].
     /// <para>
-    /// 启用预归一化优化：写入时向量自动 L2 归一化，搜索时用点积（Dot）替代余弦计算，
-    /// 因为归一化向量的 <c>Dot(a, b) = CosineSimilarity(a, b)</c>。
+    /// Enables pre-normalization optimization: vectors are automatically L2-normalized at write time,
+    /// and dot product (Dot) is used instead of cosine during search,
+    /// since for normalized vectors <c>Dot(a, b) = CosineSimilarity(a, b)</c>.
     /// </para>
     /// </summary>
     Cosine,
 
     /// <summary>
-    /// 欧几里得距离（转换为相似度）：<c>similarity = 1 / (1 + ‖a - b‖₂)</c>。值域 (0, 1]。
-    /// <para>距离为 0 时相似度为 1（完全相同），距离趋向无穷时相似度趋向 0。</para>
+    /// Euclidean distance (converted to similarity): <c>similarity = 1 / (1 + ‖a - b‖₂)</c>. Range: (0, 1].
+    /// <para>Similarity is 1 when distance is 0 (identical); approaches 0 as distance approaches infinity.</para>
     /// </summary>
     Euclidean,
 
     /// <summary>
-    /// 内积（点积）：<c>a·b = Σ(aᵢ × bᵢ)</c>。值域取决于向量长度。
-    /// <para>归一化向量的点积等价于余弦相似度。适合最大内积搜索（MIPS）场景。</para>
+    /// Dot product (inner product): <c>a·b = Σ(aᵢ × bᵢ)</c>. Range depends on vector magnitude.
+    /// <para>For normalized vectors, dot product equals cosine similarity. Suitable for maximum inner product search (MIPS).</para>
     /// </summary>
     DotProduct,
 
     /// <summary>
-    /// 曼哈顿距离（L1 范数）转相似度：<c>similarity = 1 / (1 + Σ|aᵢ - bᵢ|)</c>。值域 (0, 1]。
-    /// <para>对离群维度不敏感（不平方放大差异）。适合稀疏特征、推荐系统。</para>
+    /// Manhattan distance (L1 norm) converted to similarity: <c>similarity = 1 / (1 + Σ|aᵢ - bᵢ|)</c>. Range: (0, 1].
+    /// <para>Less sensitive to outlier dimensions than Euclidean (no squaring). Suitable for sparse features and recommendation systems.</para>
     /// </summary>
     Manhattan,
 
     /// <summary>
-    /// 切比雪夫距离（L∞ 范数）转相似度：<c>similarity = 1 / (1 + max|aᵢ - bᵢ|)</c>。值域 (0, 1]。
-    /// <para>仅关注最大维度差异。适合特征偏差检测、棋盘距离。</para>
+    /// Chebyshev distance (L∞ norm) converted to similarity: <c>similarity = 1 / (1 + max|aᵢ - bᵢ|)</c>. Range: (0, 1].
+    /// <para>Only considers the maximum per-dimension difference. Suitable for feature deviation detection and chessboard distances.</para>
     /// </summary>
     Chebyshev,
 
     /// <summary>
-    /// 皮尔逊相关系数：去均值后的余弦相似度。值域 [-1, 1]。
+    /// Pearson correlation coefficient: cosine similarity after mean-centering. Range: [-1, 1].
     /// <para>
-    /// 消除向量整体偏移的影响，仅衡量维度间变化模式的线性相关性。
-    /// 适合文本嵌入（去除文档长度偏置）、TF-IDF 文档比较、推荐系统评分向量。
+    /// Eliminates the effect of overall vector offset; measures only the linear correlation pattern across dimensions.
+    /// Suitable for text embeddings (removing document-length bias), TF-IDF document comparison, and recommendation score vectors.
     /// </para>
     /// </summary>
     Pearson,
 
     /// <summary>
-    /// 汉明相似度：<c>similarity = 1 - (不等元素数 / 总维度)</c>。值域 [0, 1]。
+    /// Hamming similarity: <c>similarity = 1 - (number of unequal elements / total dimensions)</c>. Range: [0, 1].
     /// <para>
-    /// 适合二值化向量、LSH 二进制哈希码、SimHash/MinHash 文本指纹的快速比对。
-    /// 对连续浮点向量通常无意义，建议仅用于二值化或量化后的向量。
+    /// Suitable for binary vectors, LSH binary hash codes, and SimHash/MinHash text fingerprint comparison.
+    /// Generally meaningless for continuous floating-point vectors; use only with binarized or quantized vectors.
     /// </para>
     /// </summary>
     Hamming,
 
     /// <summary>
-    /// 广义 Jaccard 相似度：<c>similarity = Σmin(aᵢ,bᵢ) / Σmax(aᵢ,bᵢ)</c>。值域 [0, 1]。
+    /// Generalized Jaccard similarity: <c>similarity = Σmin(aᵢ,bᵢ) / Σmax(aᵢ,bᵢ)</c>. Range: [0, 1].
     /// <para>
-    /// 二值向量时退化为标准集合 Jaccard 系数 <c>|A∩B| / |A∪B|</c>。
-    /// 适合 BoW/TF-IDF 稀疏文本特征、直方图特征比较。要求元素非负。
+    /// Degenerates to the standard set Jaccard coefficient <c>|A∩B| / |A∪B|</c> for binary vectors.
+    /// Suitable for BoW/TF-IDF sparse text features and histogram feature comparison. Requires non-negative elements.
     /// </para>
     /// </summary>
     Jaccard,
 
     /// <summary>
-    /// 堪培拉距离转相似度：<c>similarity = 1 - (1/n) × Σ|aᵢ-bᵢ|/(|aᵢ|+|bᵢ|)</c>。值域 [0, 1]。
+    /// Canberra distance converted to similarity: <c>similarity = 1 - (1/n) × Σ|aᵢ-bᵢ|/(|aᵢ|+|bᵢ|)</c>. Range: [0, 1].
     /// <para>
-    /// 加权 L1 距离——每个维度按量级归一化，对接近零的值非常敏感。
-    /// 适合稀疏文本特征、化学指纹、量级差异大的混合特征。
+    /// A weighted L1 distance — each dimension is normalized by its magnitude, making it very sensitive to values near zero.
+    /// Suitable for sparse text features, chemical fingerprints, and mixed features with large magnitude differences.
     /// </para>
     /// </summary>
     Canberra
 }
 
 /// <summary>
-/// 数据导出/导入的文件格式。
+/// File format for data export/import.
 /// <para>
-/// 仅用于 <see cref="QuiverDbContext.ExportAsync"/> 和 <see cref="QuiverDbContext.ImportAsync"/>，
-/// 不影响数据库的主存储格式（始终为紧凑二进制格式）。
+/// Used only with <see cref="QuiverDbContext.ExportAsync"/> and <see cref="QuiverDbContext.ImportAsync"/>;
+/// does not affect the primary storage format (which is always the compact binary format).
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverDbContext"/>
 public enum ExportFormat
 {
     /// <summary>
-    /// JSON 格式。可读性好，便于调试和与外部系统交换数据。
-    /// <para>使用 <c>System.Text.Json</c> 序列化，默认启用缩进和驼峰命名。</para>
+    /// JSON format. Human-readable; suitable for debugging and exchanging data with external systems.
+    /// <para>Serialized using <c>System.Text.Json</c> with indentation and camelCase naming by default.</para>
     /// </summary>
     Json,
 
     /// <summary>
-    /// XML 格式。可读性好，向量数据使用 Base64 编码。
-    /// <para>使用 <c>System.Xml.Linq</c> 序列化。</para>
+    /// XML format. Human-readable; vector data is Base64-encoded.
+    /// <para>Serialized using <c>System.Xml.Linq</c>.</para>
     /// </summary>
     Xml,
 }
 
 /// <summary>
-/// 控制<b>实体对象</b>（<c>TEntity</c>）的内存缓存策略。
+/// Controls the in-memory cache strategy for <b>entity objects</b> (<c>TEntity</c>).
 /// <para>
-/// 通过 <see cref="QuiverDbOptions.EntityCache"/> 设置。
+/// Configured via <see cref="QuiverDbOptions.EntityCache"/>.
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverDbOptions"/>
 public enum EntityCacheMode
 {
     /// <summary>
-    /// 全量内存（默认）。所有实体对象常驻内存字典，访问延迟最低，行为与旧版完全一致。
+    /// Full memory (default). All entity objects reside in an in-memory dictionary; access latency is minimal and behavior is identical to prior versions.
     /// <para>
-    /// 适用：实体对象较小，或数据集规模在百万以下的场景。
+    /// Suitable for small entity objects or datasets with fewer than one million entries.
     /// </para>
     /// </summary>
     FullMemory,
 
     /// <summary>
-    /// 懒加载分页缓存。实体对象按页（<see cref="QuiverDbOptions.PageSize"/> 条/页）管理，
-    /// 内存中最多保留 <see cref="QuiverDbOptions.MaxCachedPages"/> 页，
-    /// 超限时通过 LRU 策略将冷页序列化到 <c>.qvpg</c> 页文件，按需换入。
+    /// Lazy paging cache. Entity objects are managed in pages (<see cref="QuiverDbOptions.PageSize"/> entities/page).
+    /// At most <see cref="QuiverDbOptions.MaxCachedPages"/> pages are kept in memory;
+    /// cold pages are evicted via LRU and serialized to <c>.qvpg</c> page files, loaded back on demand.
     /// <para>
-    /// 向量索引结构（HNSW/IVF 等）不受影响，始终常驻内存以保证搜索性能。
+    /// Vector index structures (HNSW/IVF etc.) are not affected and always remain in memory to ensure search performance.
     /// </para>
     /// <para>
-    /// 适用：实体对象本身占用内存较大，或数据集规模超过百万级，且访问模式具有局部性的场景。
+    /// Suitable for large entity objects or datasets exceeding one million entries with localized access patterns.
     /// </para>
     /// <para>
-    /// 要求：必须设置 <see cref="QuiverDbOptions.DatabasePath"/>。
-    /// 页文件存放在 <c>{DatabasePath}.pages\{EntityTypeName}\</c> 目录下。
+    /// Requires: <see cref="QuiverDbOptions.DatabasePath"/> must be set.
+    /// Page files are stored in the <c>{DatabasePath}.pages\{EntityTypeName}\</c> directory.
     /// </para>
     /// </summary>
     LazyPaging

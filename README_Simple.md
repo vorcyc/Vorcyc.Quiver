@@ -1,12 +1,25 @@
-﻿# Vorcyc Quiver 3.1.0
+﻿# Vorcyc Quiver 3.2.0
 
-![Vorcyc Quiver 3.1.0](logo.jpg "Vorcyc Quiver 3.1.0")
+![Vorcyc Quiver 3.2.0](logo.jpg "Vorcyc Quiver 3.2.0")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
 📖 [Github Repo (full documention)](https://github.com/vorcyc/Vorcyc.Quiver)
 
 **Quiver** draws on EF Core's `DbContext` design pattern, allowing developers to define entities and indexing strategies through declarative attributes such as `[QuiverKey]`, `[QuiverVector]`, and `[QuiverIndex]`, with the framework automatically completing model discovery, index construction, and persistence management at runtime.
+
+---
+
+## 🆕 What's New in 3.2.0
+
+> v3.2.0 is fully backward-compatible with all previous data files.
+
+| Feature | Description |
+|---------|-------------|
+| **`CompactMemory()` / `CompactMemoryAsync()`** | Call on any `QuiverSet<T>` to flush dirty pages and evict all in-memory pages on demand. |
+| **`CompactAllMemoryAsync()`** | Call on `QuiverDbContext` to compact every collection at once. |
+
+Both methods are no-op in `FullMemory` mode. Vector index structures always remain in memory.
 
 ---
 
@@ -59,6 +72,7 @@
 - **Concurrency Safe** — `QuiverSet<T>` uses `ReaderWriterLockSlim` internally; concurrent reads and writes are safe out-of-the-box.
 - **SIMD Accelerated** — All similarity implementations use `TensorPrimitives` + `Vector<float>` SIMD, auto-adapting to SSE4/AVX2/AVX-512.
 - **Lazy-loading Page Cache** — Optional `EntityCache = EntityCacheMode.LazyPaging` with LRU eviction and `MaxCachedPages` / `PageSize` controls. Entity objects load on demand; vector indexes remain resident for full search performance.
+- **CompactMemory** — `CompactMemory()` / `CompactMemoryAsync()` on `QuiverSet<T>` and `CompactAllMemoryAsync()` on `QuiverDbContext` flush dirty pages and release all cached pages on demand.
 - **Schema Migration** — Property rename and value transform via `ConfigureMigration<T>()`. Adding/removing fields requires no configuration.
 
 **Typical Use Cases**: Semantic search · RAG · Face recognition · Image-to-image search · Recommendation systems · Multimodal retrieval

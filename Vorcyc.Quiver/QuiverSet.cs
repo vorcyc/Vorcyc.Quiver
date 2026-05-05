@@ -61,10 +61,10 @@ internal record QuiverFieldInfo(
 /// </para>
 /// </summary>
 /// <typeparam name="TEntity">
-/// 实体类型。须满足以下约束：
+/// The entity type. Must satisfy the following constraints:
 /// <list type="bullet">
-///   <item>标记一个 <see cref="QuiverKeyAttribute"/> 属性作为主键</item>
-///   <item>标记至少一个 <see cref="QuiverVectorAttribute"/> 属性作为向量字段（类型须为 <c>float[]</c>）</item>
+///   <item>Has exactly one property marked with <see cref="QuiverKeyAttribute"/> as the primary key.</item>
+///   <item>Has at least one <c>float[]</c> property marked with <see cref="QuiverVectorAttribute"/> as a vector field.</item>
 /// </list>
 /// </typeparam>
 /// <example>
@@ -77,77 +77,78 @@ internal record QuiverFieldInfo(
 public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> where TEntity : class, new()
 {
     // ──────────────────────────────────────────────────────────────
-    // 存储层：内部 ID → 实体 的双向映射，内部 ID 由 _nextId 自增分配
+    // Storage layer: bidirectional mapping of internal ID → entity; internal IDs are auto-incremented by _nextId
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 实体缓存。<see cref="EntityCacheMode.FullMemory"/> 模式下为直通字典，
-    /// <see cref="EntityCacheMode.LazyPaging"/> 模式下为 LRU 分页缓存。
-    /// 对外提供与 <c>Dictionary&lt;int, TEntity&gt;</c> 相同的访问接口。
+    /// Entity cache. In <see cref="EntityCacheMode.FullMemory"/> mode this is a pass-through dictionary;
+    /// in <see cref="EntityCacheMode.LazyPaging"/> mode it is an LRU paged cache.
+    /// The external interface is identical to <c>Dictionary&lt;int, TEntity&gt;</c> in both modes.
     /// </summary>
     private readonly EntityPageCache<TEntity> _entities;
 
-    /// <summary>用户主键 → 内部 ID 的映射，支持 O(1) 的主键去重和查找。</summary>
+    /// <summary>User primary key → internal ID mapping; supports O(1) deduplication and lookup.</summary>
     private readonly Dictionary<object, int> _keyToId = [];
 
-    /// <summary>内部 ID 自增计数器。仅在写锁内递增，无需原子操作。</summary>
+    /// <summary>Auto-incrementing internal ID counter. Incremented only under the write lock; no atomic operation needed.</summary>
     private int _nextId;
 
     // ──────────────────────────────────────────────────────────────
-    // 元数据层：构造后冻结的只读配置
+    // Metadata layer: read-only configuration frozen after construction
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>编译后的主键属性访问器，替代反射调用 PropertyInfo.GetValue。</summary>
+    /// <summary>Compiled primary key property accessor, replacing runtime reflection via PropertyInfo.GetValue.</summary>
     private readonly Func<TEntity, object?> _getKey;
 
-    /// <summary>向量字段名称 → 字段元信息（维度、度量、索引配置）。构造后冻结。</summary>
+    /// <summary>Vector field name → field metadata (dimensions, metric, index config). Frozen after construction.</summary>
     private readonly FrozenDictionary<string, QuiverFieldInfo> _vectorFields;
 
-    /// <summary>向量字段名称 → 编译后的向量属性访问器。构造后冻结。</summary>
+    /// <summary>Vector field name → compiled vector property accessor. Frozen after construction.</summary>
     private readonly FrozenDictionary<string, Func<TEntity, float[]?>> _vectorGetters;
 
-    /// <summary>向量字段名称 → 对应的向量索引实例。构造后冻结。</summary>
+    /// <summary>Vector field name → corresponding vector index instance. Frozen after construction.</summary>
     private readonly FrozenDictionary<string, IVectorIndex> _indices;
 
-    /// <summary>向量字段名称 → 向量数据存储实例。构造后冻结。</summary>
+    /// <summary>Vector field name → vector data store instance. Frozen after construction.</summary>
     private readonly FrozenDictionary<string, IVectorStore> _vectorStores;
 
     /// <summary>
-    /// 当实体仅有一个向量字段时缓存的默认字段信息，避免每次搜索调用 _vectorFields.First()。
-    /// 多字段实体时为 <c>null</c>。
+    /// Cached default field info when the entity has exactly one vector field, avoiding a call to _vectorFields.First() on every search.
+    /// <c>null</c> when the entity has multiple vector fields.
     /// </summary>
     private readonly (string Name, QuiverFieldInfo Field)? _defaultField;
 
-    /// <summary>VectorFields 公共属性的惰性缓存，首次访问时构建。</summary>
+    /// <summary>Lazy-initialized cache for the public VectorFields property; built on first access.</summary>
     private ReadOnlyDictionary<string, int>? _vectorFieldsCache;
 
     // ──────────────────────────────────────────────────────────────
-    // 并发控制
+    // Concurrency control
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 读写分离锁。读操作（Search/Find）获取共享读锁，写操作（Add/Remove/Clear）获取独占写锁。
+    /// Reader-writer lock. Read operations (Search/Find) acquire a shared read lock; write operations (Add/Remove/Clear) acquire an exclusive write lock.
     /// </summary>
     private readonly ReaderWriterLockSlim _lock = new();
 
     /// <summary>
-    /// 释放标志：0 = 未释放，1 = 已释放。
-    /// 配合 <see cref="Interlocked.Exchange"/> 保证并发 Dispose 安全。
+    /// Dispose flag: 0 = not disposed, 1 = disposed.
+    /// Used with <see cref="Interlocked.Exchange"/> to ensure concurrent Dispose safety.
     /// </summary>
     private int _disposed;
 
     /// <summary>
-    /// 初始化向量集合。通过反射扫描 <typeparamref name="TEntity"/> 的属性，
-    /// 自动发现主键和向量字段，编译属性访问器，并为每个向量字段创建对应的索引和存储实例。
+    /// Initializes the vector collection. Scans properties of <typeparamref name="TEntity"/> via reflection
+    /// to auto-discover the primary key and vector fields, compiles property accessors, and creates
+    /// the corresponding index and vector store instances for each vector field.
     /// </summary>
     /// <param name="databasePath">
-    /// 数据库路径。<see cref="EntityCacheMode.LazyPaging"/> 模式下用于派生页文件目录。
+    /// Database path. Used to derive the page file directory in <see cref="EntityCacheMode.LazyPaging"/> mode.
     /// </param>
-    /// <param name="entityCache">实体对象的内存缓存策略。</param>
-    /// <param name="maxCachedPages">懒加载模式下内存中最多保留的页数。</param>
-    /// <param name="pageSize">懒加载模式下每页容纳的实体数量。</param>
+    /// <param name="entityCache">In-memory cache strategy for entity objects.</param>
+    /// <param name="maxCachedPages">Maximum number of pages kept in memory in lazy-loading mode.</param>
+    /// <param name="pageSize">Number of entities per page in lazy-loading mode.</param>
     /// <exception cref="InvalidOperationException">
-    /// 实体类型缺少 <see cref="QuiverKeyAttribute"/> 主键，或没有任何 <see cref="QuiverVectorAttribute"/> 向量字段。
+    /// The entity type is missing a <see cref="QuiverKeyAttribute"/> primary key, or has no <see cref="QuiverVectorAttribute"/> vector fields.
     /// </exception>
     internal QuiverSet(
         string? databasePath = null,
@@ -157,14 +158,14 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     {
         var type = typeof(TEntity);
 
-        // ── 发现主键属性 ──
+        // ── Discover primary key property ──
         var keyProp = type.GetProperties()
             .FirstOrDefault(p => p.GetCustomAttribute<QuiverKeyAttribute>() != null)
             ?? throw new InvalidOperationException($"Entity {type.Name} must have a [QuiverKey] property.");
 
         _getKey = CompileGetter<object?>(keyProp);
 
-        // ── 发现并注册所有向量字段 ──
+        // ── Discover and register all vector fields ──
         var vectorProps = type.GetProperties()
             .Where(p => p.GetCustomAttribute<QuiverVectorAttribute>() != null);
 
@@ -189,14 +190,14 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
             vectorGetters[prop.Name] = CompileGetter<float[]?>(prop);
 
-            // ── 为每个向量字段创建对应的 IVectorStore ──
+            // ── Create the corresponding IVectorStore for each vector field ──
             var store = new HeapVectorStore();
             vectorStores[prop.Name] = store;
 
-            // ── 创建对应的向量索引实例（通过泛型辅助方法消除度量×索引的笛卡尔积）──
+            // ── Create the corresponding vector index instance (generic helper eliminates the metric×index Cartesian product) ──
             if (vectorAttr.CustomSimilarity is { } customSimType)
             {
-                // 自定义度量：运行时 Type → 泛型索引实例（反射仅在构造时执行一次）
+                // Custom metric: convert runtime Type → generic index instance (reflection executed only once at construction)
                 indices[prop.Name] = CreateIndexReflection(indexAttr, customSimType, store);
             }
             else
@@ -231,7 +232,7 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             _defaultField = (first.Key, first.Value);
         }
 
-        // ── 初始化实体缓存（FullMemory 或 LazyPaging）──
+        // ── Initialize entity cache (FullMemory or LazyPaging) ──
         if (entityCache == EntityCacheMode.LazyPaging && !string.IsNullOrEmpty(databasePath))
         {
             var pageDir = Path.Combine(databasePath + ".pages", typeof(TEntity).Name);
@@ -243,7 +244,7 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
         }
     }
 
-    /// <summary>当前存储的实体数量。线程安全（读锁）。</summary>
+    /// <summary>Current number of stored entities. Thread-safe (read lock).</summary>
     public int Count
     {
         get
@@ -256,38 +257,38 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 是否处于懒加载分页缓存模式（<see cref="EntityCacheMode.LazyPaging"/>）。
+    /// Whether the collection is running in lazy-paging cache mode (<see cref="EntityCacheMode.LazyPaging"/>).
     /// </summary>
     public bool IsLazyLoading => _entities.IsLazy;
 
     /// <summary>
-    /// 所有向量字段名称与维度的只读映射。
-    /// 首次访问时惰性构建，后续调用返回缓存实例。
+    /// Read-only mapping of all vector field names to their dimensions.
+    /// Built lazily on first access; subsequent calls return the cached instance.
     /// </summary>
     public IReadOnlyDictionary<string, int> VectorFields
         => _vectorFieldsCache ??= new ReadOnlyDictionary<string, int>(
             _vectorFields.ToDictionary(kv => kv.Key, kv => kv.Value.Dimensions));
 
-    #region 枚举
+    #region Enumeration
 
     /// <summary>
-    /// 返回所有实体的枚举器。支持 <c>foreach</c> 循环和 LINQ 查询。
+    /// Returns an enumerator over all entities. Supports <c>foreach</c> loops and LINQ queries.
     /// <para>
-    /// <b>线程安全</b>：枚举前在读锁内拍摄实体快照（浅拷贝），
-    /// 释放锁后再逐一 yield，避免持锁期间执行用户代码导致死锁。
-    /// 枚举期间的写操作不影响已拍摄的快照。
+    /// <b>Thread-safe</b>: A shallow snapshot of entities is taken inside a read lock before enumeration;
+    /// the lock is released before yielding, avoiding deadlocks caused by user code running while the lock is held.
+    /// Write operations during enumeration do not affect the already-captured snapshot.
     /// </para>
     /// </summary>
-    /// <returns>实体快照的枚举器。</returns>
+    /// <returns>An enumerator over the entity snapshot.</returns>
     /// <example>
     /// <code>
-    /// // foreach 循环
+    /// // foreach loop
     /// foreach (var doc in db.Documents)
     ///     Console.WriteLine(doc.Title);
     ///
-    /// // LINQ 查询
+    /// // LINQ query
     /// var tutorials = db.Documents
-    ///     .Where(e => e.Category == "教程")
+    ///     .Where(e => e.Category == "Tutorials")
     ///     .OrderBy(e => e.Title)
     ///     .ToList();
     /// </code>
@@ -305,15 +306,49 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             yield return entity;
     }
 
-    /// <summary>非泛型枚举器实现，转发到泛型版本。</summary>
+    /// <summary>Non-generic enumerator implementation; forwards to the generic version.</summary>
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     #endregion
 
-    #region 内部工具方法
+    #region Memory compaction
 
     /// <summary>
-    /// 获取默认（唯一）向量字段。多字段实体时抛出异常引导用户使用 vectorSelector 重载。
+    /// Flushes all dirty pages to disk and evicts all loaded pages from memory, minimizing the memory footprint.
+    /// Pages are reloaded from disk transparently on next access.
+    /// <para>
+    /// No-op in <see cref="EntityCacheMode.FullMemory"/> mode.
+    /// Vector index structures (HNSW/IVF/KDTree etc.) are not affected and always remain in memory.
+    /// </para>
+    /// </summary>
+    public void CompactMemory()
+    {
+        ThrowIfDisposed();
+        _lock.EnterWriteLock();
+        try { _entities.CompactMemory(); }
+        finally { _lock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// Asynchronously flushes all dirty pages to disk and evicts all loaded pages from memory.
+    /// Offloads the work to a thread-pool thread to avoid blocking the caller (e.g. UI thread).
+    /// <para>
+    /// No-op in <see cref="EntityCacheMode.FullMemory"/> mode.
+    /// Vector index structures are not affected.
+    /// </para>
+    /// </summary>
+    public Task CompactMemoryAsync()
+    {
+        ThrowIfDisposed();
+        return Task.Run(CompactMemory);
+    }
+
+    #endregion
+
+    #region Internal utility methods
+
+    /// <summary>
+    /// Gets the default (sole) vector field. Throws when the entity has multiple fields, directing the user to the vectorSelector overload.
     /// </summary>
     private (string Name, QuiverFieldInfo Field) GetDefaultField()
     {
@@ -324,11 +359,12 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 从表达式树中解析向量字段名称，查找对应的字段元信息。
-    /// 仅支持简单属性访问表达式（如 <c>e =&gt; e.Embedding</c>），不支持方法调用或复杂表达式。
+    /// Parses a vector field name from an expression tree and retrieves the corresponding field metadata.
+    /// Only simple property-access expressions (e.g. <c>e =&gt; e.Embedding</c>) are supported;
+    /// method calls and complex expressions are not.
     /// </summary>
-    /// <returns>字段名称与 <see cref="QuiverFieldInfo"/> 的元组。</returns>
-    /// <exception cref="ArgumentException">表达式不是属性访问，或属性未标记 <see cref="QuiverVectorAttribute"/>。</exception>
+    /// <returns>A tuple of the field name and its <see cref="QuiverFieldInfo"/>.</returns>
+    /// <exception cref="ArgumentException">The expression is not a property access, or the property is not marked with <see cref="QuiverVectorAttribute"/>.</exception>
     private (string Name, QuiverFieldInfo Field) ResolveField(
         Expression<Func<TEntity, float[]>> vectorSelector)
     {
@@ -342,9 +378,9 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 检查集合是否已释放，若已释放则抛出 <see cref="ObjectDisposedException"/>。
-    /// 使用 <see cref="Volatile.Read"/> 保证跨线程可见性，
-    /// 配合 <see cref="Interlocked.Exchange"/> 在 <see cref="Dispose"/> 中设置标志。
+    /// Checks whether the collection has been disposed and throws <see cref="ObjectDisposedException"/> if so.
+    /// Uses <see cref="Volatile.Read"/> to ensure cross-thread visibility,
+    /// paired with <see cref="Interlocked.Exchange"/> in <see cref="Dispose"/> to set the flag.
     /// </summary>
     private void ThrowIfDisposed()
     {
@@ -352,8 +388,8 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 通过表达式树编译属性访问器委托，替代运行时反射调用 <see cref="PropertyInfo.GetValue"/>。
-    /// 编译后的委托性能与直接属性访问相当（纳秒级），而反射约慢 100 倍。
+    /// Compiles a property accessor delegate from an expression tree, replacing runtime reflection via <see cref="PropertyInfo.GetValue"/>.
+    /// The compiled delegate performs at the same speed as a direct property access (nanoseconds), roughly 100× faster than reflection.
     /// </summary>
     private static Func<TEntity, TResult> CompileGetter<TResult>(PropertyInfo prop)
     {
@@ -367,11 +403,11 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 对 <paramref name="source"/> 执行 L2 归一化并返回新数组，原数组不变。
-    /// 内部委托给 <see cref="NormalizeVector"/>，使用 <see cref="TensorPrimitives"/> SIMD 加速。
+    /// Performs L2 normalization on <paramref name="source"/> and returns a new array; the original array is unchanged.
+    /// Delegates internally to <see cref="NormalizeVector"/>, using <see cref="TensorPrimitives"/> SIMD acceleration.
     /// </summary>
-    /// <param name="source">原始向量数据。</param>
-    /// <returns>归一化后的新 <c>float[]</c>，长度与 <paramref name="source"/> 相同。</returns>
+    /// <param name="source">The raw vector data.</param>
+    /// <returns>A new normalized <c>float[]</c> with the same length as <paramref name="source"/>.</returns>
     private static float[] NormalizeToArray(float[] source)
     {
         var result = new float[source.Length];
@@ -380,10 +416,10 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// L2 归一化：<c>destination[i] = source[i] / ‖source‖₂</c>。
-    /// 使用 <see cref="TensorPrimitives.Norm"/> 计算 L2 范数（SIMD 加速），
-    /// 再用 <see cref="TensorPrimitives.Divide{T}(ReadOnlySpan{T}, T, Span{T})"/> 向量化除法。
-    /// 零向量（范数为 0）时清零目标数组，避免 NaN。
+    /// L2 normalization: <c>destination[i] = source[i] / ‖source‖₂</c>.
+    /// Computes the L2 norm via <see cref="TensorPrimitives.Norm"/> (SIMD-accelerated),
+    /// then applies vectorized division via <see cref="TensorPrimitives.Divide{T}(ReadOnlySpan{T}, T, Span{T})"/>.
+    /// Zero vectors (norm = 0) clear the destination array to avoid NaN.
     /// </summary>
     private static void NormalizeVector(ReadOnlySpan<float> source, Span<float> destination)
     {
@@ -395,8 +431,8 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 泛型索引工厂：根据索引配置创建对应的向量索引实例。
-    /// 一个方法覆盖全部索引类型，通过 <typeparamref name="TSim"/> 注入相似度算法。
+    /// Generic index factory: creates the appropriate vector index instance from the index configuration.
+    /// A single method covers all index types; the similarity algorithm is injected via <typeparamref name="TSim"/>.
     /// </summary>
     private static IVectorIndex CreateIndex<TSim>(QuiverIndexAttribute? config, IVectorStore store)
         where TSim : struct, ISimilarity<float>
@@ -414,8 +450,8 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     }
 
     /// <summary>
-    /// 反射索引工厂：运行时将自定义度量 <see cref="Type"/> 转换为泛型参数，
-    /// 调用 <see cref="CreateIndex{TSim}"/> 创建索引实例。仅在构造时执行一次。
+    /// Reflection-based index factory: converts a custom metric <see cref="Type"/> to a generic parameter at runtime
+    /// and calls <see cref="CreateIndex{TSim}"/> to create the index instance. Executed only once at construction.
     /// </summary>
     private static IVectorIndex CreateIndexReflection(
         QuiverIndexAttribute? config, Type simType, IVectorStore store)
@@ -435,19 +471,19 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     #region Dispose
 
     /// <summary>
-    /// 释放所有资源：刷写脏页、向量存储、索引实例和读写锁。
+    /// Releases all resources: flushes dirty pages, disposes vector stores, index instances, and the read-write lock.
     /// <para>
-    /// <see cref="EntityCacheMode.LazyPaging"/> 模式下会先将内存中的脏页写回磁盘，
-    /// 再释放 <see cref="EntityPageCache{TEntity}"/>。
+    /// In <see cref="EntityCacheMode.LazyPaging"/> mode, dirty pages are written back to disk
+    /// before releasing <see cref="EntityPageCache{TEntity}"/>.
     /// </para>
-    /// 使用 <see cref="Interlocked.Exchange"/> 保证并发调用时仅执行一次释放逻辑。
+    /// Uses <see cref="Interlocked.Exchange"/> to ensure the release logic executes only once on concurrent calls.
     /// </summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // 懒加载模式：刷新所有脏页到磁盘
+        // Lazy-loading mode: flush all dirty pages to disk
         _entities.Dispose();
 
         foreach (var store in _vectorStores.Values)
@@ -467,12 +503,12 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 }
 
 /// <summary>
-/// 向量搜索结果，封装匹配的实体及其相似度分数。
+/// A vector search result that encapsulates the matched entity and its similarity score.
 /// </summary>
-/// <typeparam name="TEntity">实体类型。</typeparam>
-/// <param name="Entity">匹配的实体实例。</param>
+/// <typeparam name="TEntity">The entity type.</typeparam>
+/// <param name="Entity">The matched entity instance.</param>
 /// <param name="Similarity">
-/// 相似度分数。值越大越相似。
-/// 具体范围取决于距离度量：Cosine/DotProduct 为 [-1, 1]，Euclidean 为 (0, 1]。
+/// The similarity score. Higher values indicate greater similarity.
+/// The exact range depends on the distance metric: Cosine/DotProduct in [-1, 1]; Euclidean in (0, 1].
 /// </param>
 public record QuiverSearchResult<TEntity>(TEntity Entity, float Similarity);

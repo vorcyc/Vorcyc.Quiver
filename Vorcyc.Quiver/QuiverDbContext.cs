@@ -7,28 +7,28 @@ using Quiver.Storage;
 using Quiver.Storage.Wal;
 
 /// <summary>
-/// 向量数据库上下文基类。类似 EF Core 的 <c>DbContext</c> 模式，
-/// 子类通过声明 <see cref="QuiverSet{TEntity}"/> 类型的公共属性来注册实体集合。
+/// Vector database context base class. Similar to EF Core's <c>DbContext</c> pattern,
+/// subclasses register entity collections by declaring public properties of type <see cref="QuiverSet{TEntity}"/>.
 /// <para>
-/// <b>自动发现</b>：构造时通过反射扫描子类的所有 <c>QuiverSet&lt;T&gt;</c> 属性，
-/// 自动创建实例并注入，无需手动初始化。
+/// <b>Auto-discovery</b>: During construction, all <c>QuiverSet&lt;T&gt;</c> properties on the subclass are scanned
+/// via reflection; instances are automatically created and injected without manual initialization.
 /// </para>
 /// <para>
-/// <b>持久化</b>：支持两种模式：
+/// <b>Persistence</b>: Two modes are supported:
 /// <list type="bullet">
-///   <item><b>全量模式</b>（默认）：<see cref="SaveAsync"/> 全量序列化到磁盘。</item>
-///   <item><b>WAL 增量模式</b>：<see cref="SaveChangesAsync"/> 仅将变更追加到 WAL 文件，
-///   O(Δ) 复杂度；<see cref="CompactAsync"/> 创建全量快照并清空 WAL。</item>
+///   <item><b>Full mode</b> (default): <see cref="SaveAsync"/> fully serializes all data to disk.</item>
+///   <item><b>WAL incremental mode</b>: <see cref="SaveChangesAsync"/> appends only changes to the WAL file
+///   at O(Δ) complexity; <see cref="CompactAsync"/> creates a full snapshot and clears the WAL.</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>生命周期</b>：实现 <see cref="IDisposable"/> 和 <see cref="IAsyncDisposable"/>。
-/// 同步 Dispose 仅释放资源，异步 DisposeAsync 会先自动保存再释放。
+/// <b>Lifecycle</b>: Implements <see cref="IDisposable"/> and <see cref="IAsyncDisposable"/>.
+/// Synchronous Dispose releases resources only; asynchronous DisposeAsync saves first, then releases.
 /// </para>
 /// </summary>
 /// <example>
 /// <code>
-/// // 1. 定义上下文（启用 WAL）
+/// // 1. Define the context (with WAL enabled)
 /// public class MyDb : QuiverDbContext                    
 /// {
 ///     public QuiverSet&lt;Document&gt; Documents { get; set; } 
@@ -43,108 +43,108 @@ using Quiver.Storage.Wal;
 public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 {
     // ──────────────────────────────────────────────────────────────
-    // 内部状态
+    // Internal state
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 实体类型 → QuiverSet 实例的映射。
-    /// 键为 <c>typeof(TEntity)</c>，值为 <c>QuiverSet&lt;TEntity&gt;</c>（以 object 存储避免泛型擦除）。
+    /// Entity type → QuiverSet instance mapping.
+    /// Key is <c>typeof(TEntity)</c>; value is <c>QuiverSet&lt;TEntity&gt;</c> (stored as object to avoid generic erasure).
     /// </summary>
     private readonly Dictionary<Type, object> _sets = [];
 
     /// <summary>
-    /// 类型全名 → 类型对象的映射。用于从持久化文件中的类型名称字符串反查 CLR 类型。
-    /// 键为 <c>Type.FullName</c>（如 <c>"MyApp.Document"</c>）。
+    /// Type full name → Type object mapping. Used to look up CLR types from type name strings in persisted files.
+    /// Key is <c>Type.FullName</c> (e.g. <c>"MyApp.Document"</c>).
     /// </summary>
     private readonly Dictionary<string, Type> _typeMap = [];
 
-    /// <summary>二进制存储提供者（唯一主存储格式）。</summary>
+    /// <summary>Binary storage provider (the sole primary storage format).</summary>
     private readonly BinaryStorageProvider _storageProvider = new();
 
-    /// <summary>数据库配置选项（路径、默认度量等）。</summary>
+    /// <summary>Database configuration options (path, default metric, etc.).</summary>
     private readonly QuiverDbOptions _options;
 
-    /// <summary>WAL 实例。仅当 <see cref="QuiverDbOptions.EnableWal"/> 为 <c>true</c> 时非空。</summary>
+    /// <summary>WAL instance. Non-null only when <see cref="QuiverDbOptions.EnableWal"/> is <c>true</c>.</summary>
     private WriteAheadLog? _wal;
 
-    /// <summary>WAL 载荷序列化选项。使用驼峰命名与快照 JSON 格式保持一致。</summary>
+    /// <summary>JSON serialization options for WAL payloads. Uses camelCase naming to match snapshot JSON format.</summary>
     private static readonly JsonSerializerOptions WalJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
     /// <summary>
-    /// 缓存的反射方法引用，避免每次调用 <see cref="SaveChangesAsync"/> 时重复反射查找。
-    /// 键为实体类型，值为 <c>DrainChanges</c> 方法引用。
+    /// Cached reflection method references to avoid repeated lookup on each <see cref="SaveChangesAsync"/> call.
+    /// Key is entity type; value is a reference to the <c>DrainChanges</c> method.
     /// </summary>
     private readonly Dictionary<Type, MethodInfo> _drainMethodCache = [];
 
     /// <summary>
-    /// 缓存的反射方法引用 —— <c>GetAll</c>。
-    /// 由 <see cref="SaveAsync"/> 和 <see cref="ExportAsync"/> 使用，避免每次调用重复反射查找。
+    /// Cached reflection method references for <c>GetAll</c>.
+    /// Used by <see cref="SaveAsync"/> and <see cref="ExportAsync"/> to avoid repeated reflection lookups.
     /// </summary>
     private readonly Dictionary<Type, MethodInfo> _getAllMethodCache = [];
 
     /// <summary>
-    /// 缓存的主键属性类型，用于 WAL 回放时反序列化主键。
-    /// 键为实体类型全名，值为主键属性的 <see cref="PropertyInfo"/>。
+    /// Cached primary key property types, used to deserialize primary keys during WAL replay.
+    /// Key is entity type full name; value is the <see cref="PropertyInfo"/> of the primary key property.
     /// </summary>
     private readonly Dictionary<string, PropertyInfo> _keyPropCache = [];
 
     /// <summary>
-    /// 各实体类型的 Schema 迁移规则。键为实体 CLR 类型，值为迁移规则。
+    /// Schema migration rules per entity type. Key is CLR entity type; value is the migration rule.
     /// <para>
-    /// 通过子类调用 <see cref="ConfigureMigration{TEntity}"/> 注册。
-    /// 加载时自动应用属性重命名和值转换，实现透明的 Schema 迁移。
+    /// Registered by subclasses via <see cref="ConfigureMigration{TEntity}"/>.
+    /// Applied automatically at load time for transparent Schema migration with property renaming and value transformation.
     /// </para>
     /// </summary>
     private readonly Dictionary<Type, SchemaMigrationRule> _migrations = [];
 
-    /// <summary>释放标志：0 = 未释放，1 = 已释放。使用 <see cref="Interlocked.Exchange"/> 保证并发 Dispose 安全。</summary>
+    /// <summary>Dispose flag: 0 = not disposed, 1 = disposed. Uses <see cref="Interlocked.Exchange"/> for safe concurrent Dispose.</summary>
     private int _disposed;
 
     /// <summary>
-    /// 使用默认选项创建上下文。默认度量为 Cosine，主存储为二进制格式（QDB v3），无持久化路径（内存模式）。
+    /// Creates a context with default options. Default metric is Cosine; primary storage is binary (QDB v3); no persistence path (memory-only mode).
     /// </summary>
     protected QuiverDbContext() : this(new QuiverDbOptions()) { }
 
     /// <summary>
-    /// 使用指定选项创建上下文。
+    /// Creates a context with the specified options.
     /// </summary>
     /// <param name="options">
-    /// 数据库配置选项。包含存储路径、默认距离度量、存储格式、JSON 序列化选项等。
+    /// Database configuration options including storage path, default distance metric, and serialization settings.
     /// </param>
     protected QuiverDbContext(QuiverDbOptions options)
     {
         _options = options;
         options.Validate();
 
-        // 反射扫描子类属性，自动创建并注入所有 QuiverSet<T> 实例
+        // Scan subclass properties via reflection and auto-create/inject all QuiverSet<T> instances
         InitializeSets();
 
-        // 初始化 WAL（如果启用且配置了数据库路径）
+        // Initialize WAL (if enabled and a database path is configured)
         if (options.EnableWal && !string.IsNullOrEmpty(options.DatabasePath))
             _wal = new WriteAheadLog(options.DatabasePath + ".wal");
     }
 
-    #region 初始化
+    #region Initialization
 
     /// <summary>
-    /// 通过反射扫描子类的所有 <c>QuiverSet&lt;T&gt;</c> 公共属性，
-    /// 为每个属性创建对应的 <see cref="QuiverSet{TEntity}"/> 实例并注入。
+    /// Scans all <c>QuiverSet&lt;T&gt;</c> public properties on the subclass via reflection,
+    /// creates the corresponding <see cref="QuiverSet{TEntity}"/> instances, and injects them.
     /// <para>
-    /// 处理流程：
+    /// Processing flow:
     /// <list type="number">
-    ///   <item>筛选子类中所有类型为 <c>QuiverSet&lt;T&gt;</c> 的属性</item>
-    ///   <item>通过 <c>Activator.CreateInstance</c> 调用 <c>internal</c> 构造函数创建实例</item>
-    ///   <item>注册到 <see cref="_sets"/>（按类型查找）和 <see cref="_typeMap"/>（按名称查找）</item>
-    ///   <item>通过 <c>PropertyInfo.SetValue</c> 将实例注入子类属性</item>
+    ///   <item>Filter all properties on the subclass whose type is <c>QuiverSet&lt;T&gt;</c></item>
+    ///   <item>Create instances via <c>Activator.CreateInstance</c> using the <c>internal</c> constructor</item>
+    ///   <item>Register in <see cref="_sets"/> (by type) and <see cref="_typeMap"/> (by name)</item>
+    ///   <item>Inject the instance into the subclass property via <c>PropertyInfo.SetValue</c></item>
     /// </list>
     /// </para>
     /// </summary>
     private void InitializeSets()
     {
-        // 扫描子类中所有 QuiverSet<T> 类型的属性
+        // Scan all QuiverSet<T>-typed properties on the subclass
         var setProperties = GetType()
             .GetProperties()
             .Where(p => p.PropertyType.IsGenericType &&
@@ -152,10 +152,10 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
         foreach (var prop in setProperties)
         {
-            // 提取泛型参数 T（如 QuiverSet<Document> → typeof(Document)）
+            // Extract the generic argument T (e.g. QuiverSet<Document> → typeof(Document))
             var entityType = prop.PropertyType.GetGenericArguments()[0];
 
-            // 调用 QuiverSet<T> 的 internal 构造函数，传入配置参数
+            // Call the internal constructor of QuiverSet<T> with configuration parameters
             var setInstance = Activator.CreateInstance(
                 typeof(QuiverSet<>).MakeGenericType(entityType),
                 BindingFlags.Instance | BindingFlags.NonPublic,
@@ -164,21 +164,21 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                  _options.EntityCache, _options.MaxCachedPages, _options.PageSize],
                 null);
 
-            // 注册到内部字典
+            // Register in internal dictionaries
             _sets[entityType] = setInstance!;
             _typeMap[entityType.FullName!] = entityType;
 
-            // 注入到子类的属性上
+            // Inject into the subclass property
             prop.SetValue(this, setInstance);
 
-            // 缓存反射方法引用
+            // Cache reflection method references
             _drainMethodCache[entityType] = setInstance!.GetType()
                 .GetMethod("DrainChanges", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
             _getAllMethodCache[entityType] = setInstance!.GetType()
                 .GetMethod("GetAll", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-            // 缓存主键属性信息（WAL 回放反序列化主键时使用）
+            // Cache primary key property info (used to deserialize keys during WAL replay)
             var keyProp = entityType.GetProperties()
                 .FirstOrDefault(p => p.GetCustomAttribute<QuiverKeyAttribute>() != null);
             if (keyProp != null)
@@ -188,21 +188,21 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
     #endregion
 
-    #region Schema 迁移配置
+    #region Schema Migration Configuration
 
     /// <summary>
-    /// 为指定实体类型注册 Schema 迁移规则。
+    /// Registers Schema migration rules for the specified entity type.
     /// <para>
-    /// 在子类构造函数中调用此方法，声明属性重命名和值转换规则。
-    /// 加载时 (<see cref="LoadAsync"/>) 会自动应用这些规则，实现透明的 Schema 迁移。
+    /// Call this method in the subclass constructor to declare property rename and value transformation rules.
+    /// These rules are automatically applied at load time (<see cref="LoadAsync"/>) for transparent Schema migration.
     /// </para>
     /// <para>
-    /// <b>简单场景（加/减字段）无需配置</b>——新增字段自动取默认值，删除字段自动跳过。
-    /// 仅在需要重命名字段或转换值类型时才需要调用此方法。
+    /// <b>Simple scenarios (adding/removing fields) do not require configuration</b> — new fields default automatically; removed fields are silently skipped.
+    /// This method is only needed when renaming fields or converting value types.
     /// </para>
     /// </summary>
-    /// <typeparam name="TEntity">要配置迁移的实体类型。</typeparam>
-    /// <param name="configure">迁移构建器的配置委托。</param>
+    /// <typeparam name="TEntity">The entity type to configure migration for.</typeparam>
+    /// <param name="configure">Configuration delegate for the migration builder.</param>
     /// <example>
     /// <code>
     /// public class MyDb : QuiverDbContext
@@ -227,19 +227,19 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
     #endregion
 
-    #region 获取 Set
+    #region Set Accessor
 
     /// <summary>
-    /// 按实体类型获取对应的向量集合。等价于直接访问子类的属性，但支持动态类型查找。
+    /// Gets the vector collection for the specified entity type. Equivalent to accessing the subclass property directly, but supports dynamic type lookup.
     /// </summary>
-    /// <typeparam name="TEntity">实体类型。须在子类中声明对应的 <c>QuiverSet&lt;TEntity&gt;</c> 属性。</typeparam>
-    /// <returns>对应的 <see cref="QuiverSet{TEntity}"/> 实例。</returns>
-    /// <exception cref="InvalidOperationException">上下文中未注册指定类型的 QuiverSet。</exception>
+    /// <typeparam name="TEntity">The entity type. A corresponding <c>QuiverSet&lt;TEntity&gt;</c> property must be declared in the subclass.</typeparam>
+    /// <returns>The corresponding <see cref="QuiverSet{TEntity}"/> instance.</returns>
+    /// <exception cref="InvalidOperationException">No QuiverSet for the specified type is registered in this context.</exception>
     /// <example>
     /// <code>
-    /// // 以下两种方式等价：
-    /// var set1 = db.Documents;             // 直接属性访问
-    /// var set2 = db.Set&lt;Document&gt;();  // 泛型方法访问
+    /// // Both approaches are equivalent:
+    /// var set1 = db.Documents;             // Direct property access
+    /// var set2 = db.Set&lt;Document&gt;();  // Generic method access
     /// </code>
     /// </example>
     public QuiverSet<TEntity> Set<TEntity>() where TEntity : class, new()
@@ -252,25 +252,25 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
     #endregion
 
-    #region 持久化
+    #region Persistence
 
     /// <summary>
-    /// 将所有向量集合的数据异步保存到磁盘（全量快照）。
+    /// Asynchronously saves all vector collection data to disk as a full snapshot.
     /// <para>
-    /// WAL 启用时，此方法同时执行压缩：创建全量快照后清空 WAL。
-    /// 等价于 <see cref="CompactAsync"/>。
+    /// When WAL is enabled, this method also performs compaction: it creates a full snapshot and clears the WAL.
+    /// Equivalent to <see cref="CompactAsync"/>.
     /// </para>
     /// </summary>
     /// <param name="path">
-    /// 保存路径。为 <c>null</c> 时使用 <see cref="QuiverDbOptions.DatabasePath"/>。
+    /// The save path. When <c>null</c>, <see cref="QuiverDbOptions.DatabasePath"/> is used.
     /// </param>
-    /// <exception cref="ArgumentException"><paramref name="path"/> 和 <c>DatabasePath</c> 均为空。</exception>
+    /// <exception cref="ArgumentException">Both <paramref name="path"/> and <c>DatabasePath</c> are empty.</exception>
     public async Task SaveAsync(string? path = null)
     {
         var filePath = path ?? _options.DatabasePath;
         ArgumentException.ThrowIfNullOrEmpty(filePath);
 
-        // 收集所有 QuiverSet 中的实体数据
+        // Collect entity data from all QuiverSets
         var setsData = new Dictionary<string, (Type Type, List<object> Entities)>();
 
         foreach (var (type, set) in _sets)
@@ -280,7 +280,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
             setsData[type.FullName!] = (type, entities);
         }
 
-        // 原子写入：先写临时文件，成功后替换原文件
+        // Atomic write: write to a temp file first, then replace the original on success
         var tempPath = filePath + ".tmp";
         var dir = Path.GetDirectoryName(filePath);
         if (!string.IsNullOrEmpty(dir))
@@ -288,12 +288,12 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
         await _storageProvider.SaveAsync(tempPath, setsData);
         File.Move(tempPath, filePath, overwrite: true);
 
-        // 快照成功后清空 WAL 和变更日志
+        // After successful snapshot, clear the WAL and pending change logs
         if (_wal != null)
         {
             _wal.Truncate();
 
-            // 清空各 QuiverSet 中未持久化的变更日志（已被快照覆盖）
+            // Clear the pending change log in each QuiverSet (already covered by the snapshot)
             foreach (var (type, set) in _sets)
             {
                 if (_drainMethodCache.TryGetValue(type, out var drainMethod))
@@ -303,26 +303,26 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// 仅将未持久化的变更增量追加到 WAL 文件。复杂度 O(Δ)。
+    /// Appends only unpersisted changes incrementally to the WAL file. O(Δ) complexity.
     /// <para>
-    /// 此方法是 WAL 模式下的主要保存方法，比 <see cref="SaveAsync"/> 快数个数量级。
-    /// WAL 未启用时，行为等同于 <see cref="SaveAsync"/>（全量保存）。
+    /// This is the primary save method in WAL mode and is orders of magnitude faster than <see cref="SaveAsync"/>.
+    /// When WAL is not enabled, this method behaves identically to <see cref="SaveAsync"/> (full save).
     /// </para>
     /// <para>
-    /// 当 WAL 记录数超过 <see cref="QuiverDbOptions.WalCompactionThreshold"/> 时，
-    /// 自动触发 <see cref="CompactAsync"/> 创建全量快照并清空 WAL。
+    /// When the WAL record count exceeds <see cref="QuiverDbOptions.WalCompactionThreshold"/>,
+    /// <see cref="CompactAsync"/> is triggered automatically to create a full snapshot and clear the WAL.
     /// </para>
     /// </summary>
     public async Task SaveChangesAsync()
     {
-        // WAL 未启用时回退到全量保存
+        // Fall back to full save when WAL is not enabled
         if (_wal == null)
         {
             await SaveAsync();
             return;
         }
 
-        // 收集所有 QuiverSet 的变更
+        // Collect changes from all QuiverSets
         var walEntries = new List<WalEntry>();
         foreach (var (type, set) in _sets)
         {
@@ -349,52 +349,52 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
         if (walEntries.Count > 0)
         {
-            // 批量追加到 WAL（单次 fsync）
+            // Batch-append to WAL (single fsync)
             await Task.Run(() => _wal.Append(walEntries, _options.WalFlushToDisk));
         }
 
-        // 自动压缩：WAL 记录数超过阈值时创建全量快照
+        // Auto-compact: create a full snapshot when WAL record count exceeds threshold
         if (_wal.RecordCount >= _options.WalCompactionThreshold)
             await CompactAsync();
     }
 
     /// <summary>
-    /// 执行压缩：创建全量快照并清空 WAL。等价于 <see cref="SaveAsync"/>。
+    /// Performs compaction: creates a full snapshot and clears the WAL. Equivalent to <see cref="SaveAsync"/>.
     /// <para>
-    /// 适用于以下场景：
+    /// Suitable for the following scenarios:
     /// <list type="bullet">
-    ///   <item>定时任务周期性压缩</item>
-    ///   <item>WAL 文件过大时手动触发</item>
-    ///   <item>应用关闭前确保快照最新</item>
+    ///   <item>Periodic compaction via a scheduled task</item>
+    ///   <item>Manual trigger when the WAL file becomes too large</item>
+    ///   <item>Ensuring the snapshot is up-to-date before application shutdown</item>
     /// </list>
     /// </para>
     /// </summary>
     public Task CompactAsync() => SaveAsync();
 
     /// <summary>
-    /// 从磁盘异步加载数据到所有向量集合中。
+    /// Asynchronously loads data from disk into all vector collections.
     /// <para>
-    /// WAL 启用时，加载流程为两阶段：
+    /// When WAL is enabled, loading is a two-phase process:
     /// <list type="number">
-    ///   <item>读取全量快照并恢复实体和索引</item>
-    ///   <item>读取 WAL 文件并按顺序回放增量变更</item>
+    ///   <item>Read the full snapshot and restore entities and indices</item>
+    ///   <item>Read the WAL file and replay incremental changes in order</item>
     /// </list>
     /// </para>
     /// <para>
-    /// 文件不存在时静默返回（不抛异常），适合首次启动场景。
+    /// Returns silently (without throwing) when the file does not exist; suitable for first-run scenarios.
     /// </para>
     /// </summary>
     /// <param name="path">
-    /// 加载路径。为 <c>null</c> 时使用 <see cref="QuiverDbOptions.DatabasePath"/>。
+    /// The load path. When <c>null</c>, <see cref="QuiverDbOptions.DatabasePath"/> is used.
     /// </param>
     public async Task LoadAsync(string? path = null)
     {
         var filePath = path ?? _options.DatabasePath;
 
-        // ── 阶段 1：加载全量快照 ──
+        // ── Phase 1: Load full snapshot ──
         if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
         {
-            // 构建迁移规则字典（类型全名 → 迁移规则），仅包含已注册迁移的类型
+            // Build migration rule dictionary (type full name → rule), only for registered types
             IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null;
             if (_migrations.Count > 0)
             {
@@ -410,7 +410,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                 if (!_typeMap.TryGetValue(typeName, out var type) || !_sets.TryGetValue(type, out var set))
                     continue;
 
-                // 应用值转换规则（如果存在）
+                // Apply value transform rules (if any)
                 if (_migrations.TryGetValue(type, out var rule) && rule.ValueTransforms.Count > 0)
                 {
                     foreach (var entity in entities)
@@ -434,20 +434,20 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
             }
         }
 
-        // ── 阶段 2：回放 WAL 增量变更 ──
+        // ── Phase 2: Replay WAL incremental changes ──
         if (_wal != null)
             ReplayWal(_wal.FilePath);
     }
 
     /// <summary>
-    /// 回放 WAL 文件中的所有有效记录，将增量变更应用到对应的向量集合。
+    /// Replays all valid records from the WAL file, applying incremental changes to the corresponding vector collections.
     /// <para>
-    /// 回放期间使用 <c>ReplayAdd/ReplayRemove/ReplayClear</c> 方法，
-    /// 不触发变更日志记录，避免循环写入。
+    /// During replay, <c>ReplayAdd/ReplayRemove/ReplayClear</c> methods are used
+    /// without triggering change log recording, to avoid circular writes.
     /// </para>
     /// <para>
-    /// 若存在 Schema 迁移规则，回放时会自动应用属性重命名（修正 JSON 属性名）
-    /// 和值转换（对反序列化后的实体执行 <see cref="SchemaMigrationRule.ValueTransforms"/>）。
+    /// When Schema migration rules are present, property renames (correcting JSON property names)
+    /// and value transforms (applied to deserialized entities via <see cref="SchemaMigrationRule.ValueTransforms"/>) are automatically applied.
     /// </para>
     /// </summary>
     private void ReplayWal(string walFilePath)
@@ -457,12 +457,12 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
         foreach (var entry in entries)
         {
-            // 查找目标类型和 QuiverSet 实例
+            // Find the target type and QuiverSet instance
             if (!_typeMap.TryGetValue(entry.TypeName, out var type) ||
                 !_sets.TryGetValue(type, out var set))
                 continue;
 
-            // 获取迁移规则（可能为 null）
+            // Retrieve migration rules (may be null)
             _migrations.TryGetValue(type, out var rule);
 
             switch (entry.Operation)
@@ -471,8 +471,8 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                     {
                         var json = entry.PayloadJson;
 
-                        // 存在重命名规则时，修正 WAL JSON 中的旧属性名
-                        if (rule != null && rule.PropertyRenames.Count > 0)
+                            // When rename rules are present, fix old property names in the WAL JSON
+                            if (rule != null && rule.PropertyRenames.Count > 0)                            // When rename rules are present, fix old property names in the WAL JSON
                         {
                             var node = JsonNode.Parse(json)!.AsObject();
                             var namingPolicy = WalJsonOptions.PropertyNamingPolicy;
@@ -490,11 +490,11 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                             json = node.ToJsonString(WalJsonOptions);
                         }
 
-                        // 反序列化实体
+                        // Deserialize the entity
                         var entity = JsonSerializer.Deserialize(json, type, WalJsonOptions);
                         if (entity == null) continue;
 
-                        // 应用值转换规则
+                        // Apply value transform rules
                         if (rule != null && rule.ValueTransforms.Count > 0)
                         {
                             foreach (var (propName, transform) in rule.ValueTransforms)
@@ -514,7 +514,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                     }
                 case WalOperation.Remove:
                     {
-                        // 反序列化主键并调用 ReplayRemove
+                        // Deserialize the primary key and call ReplayRemove
                         if (!_keyPropCache.TryGetValue(entry.TypeName, out var keyProp)) continue;
                         var key = JsonSerializer.Deserialize(entry.PayloadJson, keyProp.PropertyType, WalJsonOptions);
                         if (key == null) continue;
@@ -534,20 +534,20 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
     #endregion
 
-    #region 导出 / 导入
+    #region Export / Import
 
     /// <summary>
-    /// 将当前数据库中的所有实体异步导出到指定文件。
+    /// Asynchronously exports all entities in the current database to the specified file.
     /// <para>
-    /// 导出格式为可读的 JSON 或 XML，适合数据备份、跨平台交换或人工检查。
-    /// 主存储格式（二进制 QDB）不受影响。
+    /// The export format is human-readable JSON or XML, suitable for data backup, cross-platform exchange, or manual inspection.
+    /// The primary storage format (binary QDB) is not affected.
     /// </para>
     /// </summary>
-    /// <param name="filePath">导出目标文件路径。</param>
-    /// <param name="format">导出格式，默认为 <see cref="ExportFormat.Json"/>。</param>
+    /// <param name="filePath">The export target file path.</param>
+    /// <param name="format">The export format. Default is <see cref="ExportFormat.Json"/>.</param>
     /// <param name="jsonOptions">
-    /// 仅 <see cref="ExportFormat.Json"/> 时生效的序列化选项。
-    /// 为 <c>null</c> 时使用默认选项（缩进 + 驼峰命名）。
+    /// Serialization options applied only when using <see cref="ExportFormat.Json"/>.
+    /// When <c>null</c>, default options (indented + camelCase) are used.
     /// </param>
     public async Task ExportAsync(
         string filePath,
@@ -568,17 +568,17 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// 从 JSON 或 XML 文件异步导入数据，合并到当前数据库中。
+    /// Asynchronously imports data from a JSON or XML file, merging it into the current database.
     /// <para>
-    /// 导入时对每条记录执行 Upsert（已存在则更新，不存在则新增），不清空现有数据。
-    /// Schema 迁移规则同样适用于导入数据。
+    /// Each record is upserted (updated if it exists, inserted if it does not); existing data is not cleared.
+    /// Schema migration rules are also applied to imported data.
     /// </para>
     /// </summary>
-    /// <param name="filePath">源文件路径。</param>
-    /// <param name="format">源文件格式，默认为 <see cref="ExportFormat.Json"/>。</param>
+    /// <param name="filePath">The source file path.</param>
+    /// <param name="format">The source file format. Default is <see cref="ExportFormat.Json"/>.</param>
     /// <param name="jsonOptions">
-    /// 仅 <see cref="ExportFormat.Json"/> 时生效的反序列化选项。
-    /// 为 <c>null</c> 时使用默认选项（缩进 + 驼峰命名）。
+    /// Deserialization options applied only when using <see cref="ExportFormat.Json"/>.
+    /// When <c>null</c>, default options (indented + camelCase) are used.
     /// </param>
     public async Task ImportAsync(
         string filePath,
@@ -598,7 +598,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
             if (!_typeMap.TryGetValue(typeName, out var type) || !_sets.TryGetValue(type, out var set))
                 continue;
 
-            // 应用值转换规则
+            // Apply value transform rules
             if (_migrations.TryGetValue(type, out var rule) && rule.ValueTransforms.Count > 0)
             {
                 foreach (var entity in entities)
@@ -613,7 +613,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
                     }
             }
 
-            // 逐条 Upsert
+            // Upsert each record
             var upsertMethod = set.GetType().GetMethod("Upsert", BindingFlags.Instance | BindingFlags.Public)!;
             foreach (var entity in entities)
                 upsertMethod.Invoke(set, [entity]);
@@ -622,11 +622,36 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
     #endregion
 
+    #region Memory compaction
+
+    /// <summary>
+    /// Flushes all dirty pages in every <see cref="QuiverSet{TEntity}"/> to disk and evicts all loaded pages
+    /// from memory across the entire context, minimizing the overall memory footprint.
+    /// Pages are reloaded from disk transparently on next access.
+    /// <para>
+    /// No-op for collections operating in <see cref="EntityCacheMode.FullMemory"/> mode.
+    /// Vector index structures are not affected and always remain in memory.
+    /// </para>
+    /// </summary>
+    public async Task CompactAllMemoryAsync()
+    {
+        var tasks = new List<Task>(_sets.Count);
+        foreach (var set in _sets.Values)
+        {
+            var method = set.GetType().GetMethod("CompactMemoryAsync", BindingFlags.Instance | BindingFlags.Public);
+            if (method?.Invoke(set, null) is Task t)
+                tasks.Add(t);
+        }
+        await Task.WhenAll(tasks);
+    }
+
+    #endregion
+
     #region Dispose
 
     /// <summary>
-    /// 同步释放所有向量集合资源。<b>不会</b>自动保存数据。
-    /// 如需保存请在释放前手动调用 <see cref="SaveChangesAsync"/>，或使用 <see cref="DisposeAsync"/>。
+    /// Synchronously releases all vector collection resources. Data is <b>not</b> saved automatically.
+    /// To save, call <see cref="SaveChangesAsync"/> manually before disposing, or use <see cref="DisposeAsync"/>.
     /// </summary>
     public void Dispose()
     {
@@ -642,18 +667,18 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// 异步释放资源。<b>会先自动保存数据</b>再释放所有向量集合。
-    /// 推荐在 <c>await using</c> 语句中使用，确保数据不丢失。
+    /// Asynchronously releases resources. <b>Data is saved automatically</b> before releasing all vector collections.
+    /// Recommended for use with <c>await using</c> to ensure no data is lost.
     /// <para>
-    /// WAL 启用时调用 <see cref="SaveChangesAsync"/>（增量保存），
-    /// 未启用时调用 <see cref="SaveAsync"/>（全量保存）。
+    /// When WAL is enabled, calls <see cref="SaveChangesAsync"/> (incremental save);
+    /// otherwise calls <see cref="SaveAsync"/> (full save).
     /// </para>
     /// </summary>
     /// <example>
     /// <code>
     /// await using var db = new MyDb();
-    /// // ... 操作数据 ...
-    /// // 作用域结束时自动调用 DisposeAsync → 先保存再释放
+    /// // ... operate on data ...
+    /// // DisposeAsync is called automatically at end of scope — saves then releases
     /// </code>
     /// </example>
     public async ValueTask DisposeAsync()
@@ -661,7 +686,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // 先保存数据到磁盘（内存模式下 DatabasePath 为 null，跳过保存）
+        // Save data to disk first (memory-only mode has null DatabasePath — skip saving)
         if (!string.IsNullOrEmpty(_options.DatabasePath))
         {
             if (_wal != null)
@@ -672,7 +697,7 @@ public abstract class QuiverDbContext : IDisposable, IAsyncDisposable
 
         _wal?.Dispose();
 
-        // 再释放所有 QuiverSet 实例
+        // Then release all QuiverSet instances
         foreach (var set in _sets.Values)
             if (set is IDisposable d) d.Dispose();
         _sets.Clear();

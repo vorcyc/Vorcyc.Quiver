@@ -1,6 +1,6 @@
 ﻿# Vorcyc.Quiver 技术方案文档
 
-> **版本**：3.1.0
+> **版本**：3.2.0
 > **目标框架**：.NET 10  
 > **许可证**：MIT  
 > **NuGet**：https://www.nuget.org/packages/Vorcyc.Quiver  
@@ -11,6 +11,40 @@
 ## 2.0.0 更新说明（v2.x 历史变更，已整合进当前版本）
 
 > **文件格式兼容性**：v3.1.0 完全向后兼容 v1.x、v2.x 和 v3.0.0 的二进制数据文件（Magic `QDB\x01` / `QDB\x02`）。WAL 文件均可直接加载，无需任何迁移。持久化层仅存储实体属性数据，不涉及度量/索引/相似度算法的元数据，因此架构重构对文件格式零影响。
+
+---
+
+## 3.2.0 更新说明
+
+> **文件格式兼容性**：v3.2.0 完全向后兼容 v1.x、v2.x、v3.0.0 和 v3.1.0 的所有数据文件。
+
+### 新增：`CompactMemory` 按需内存压缩
+
+**背景**：`LazyPaging` 模式下，LRU 缓存在批量导入完成后仍会占用 `MaxCachedPages` 页的内存。用户希望在导入批次结束后主动释放这部分内存，同时保持向量索引常驻。
+
+**新增 API**：
+
+| 位置 | 方法 | 说明 |
+|------|------|------|
+| `EntityPageCache<T>` | `CompactMemory()` | 内部实现：刷写所有脏页 → 清空 `_loadedPages` / `_lru` / `_lruNodes` → 分配新写入页。`FullMemory` 模式为空操作。 |
+| `QuiverSet<T>` | `CompactMemory()` | 在写锁内呼叫 `_entities.CompactMemory()`。 |
+| `QuiverSet<T>` | `CompactMemoryAsync()` | `Task.Run(CompactMemory)` 异步版本。 |
+| `QuiverDbContext` | `CompactAllMemoryAsync()` | 并行调用所有 `QuiverSet` 的 `CompactMemoryAsync()`，`Task.WhenAll` 等待全部完成。 |
+
+**使用示例**：
+
+```csharp
+// 单个集合压缩
+await db.Documents.CompactMemoryAsync();
+
+// 整个上下文一次性压缩
+await db.CompactAllMemoryAsync();
+```
+
+**设计决策**：
+- `_idToPage` 和 `_pageFiles` 目录索引保留，压缩后的读取会触发页面按需重新加载，行为完全正确。
+- 向量索引结构（HNSW/IVF/KDTree 等）始终常驻内存，搜索性能不受影响。
+- `FullMemory` 模式调用时静默忽略（no-op），不抛异常。
 
 ---
 
@@ -854,6 +888,7 @@ var imageResults = db.Items.Search(e => e.ImageEmbedding, imageQuery, topK: 5);
 | **度量** | 9 种内置度量 + `ISimilarity<T>` 自定义扩展 |
 | **存储** | `IVectorStore` 抽象：HeapVectorStore（GC 堆，唯一活跃实现） |
 | **实体缓存** | `EntityPageCache<T>`：`FullMemory`（全量常驻，v2 行为）/ `LazyPaging`（LRU 分页，v3 新增） |
+| **内存压缩** | `CompactMemory()` / `CompactMemoryAsync()`（`QuiverSet`）、`CompactAllMemoryAsync()`（`QuiverDbContext`）—— 按需刷盘并驱逐全部缓存页；向量索引不受影响 |
 | **持久化** | Binary 主存储（`BinaryStorageProvider`）+ WAL 增量持久化（O(Δ)）；JSON / XML 仅作为导出/导入格式（`ExportAsync` / `ImportAsync`） |
 | **迁移** | Schema Migration：属性重命名 + 值转换（ConfigureMigration），增/删字段自动处理 |
 | **并发** | ReaderWriterLockSlim 读写分离锁，开箱即用 |

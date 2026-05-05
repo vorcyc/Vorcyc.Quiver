@@ -268,7 +268,7 @@ public partial class QuiverSet<TEntity>
     }
 
     /// <summary>
-    /// 仅映射第一个有效结果，避免 SearchTop1 路径上的中间 List 分配。
+    /// Maps only the first valid result, avoiding an intermediate List allocation on the SearchTop1 path.
     /// </summary>
     private QuiverSearchResult<TEntity>? MapTop1(List<(int Id, float Similarity)> indexResults)
     {

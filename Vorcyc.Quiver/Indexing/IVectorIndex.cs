@@ -1,13 +1,16 @@
 ﻿namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
-/// 向量索引的统一接口。定义了所有索引实现（Flat、HNSW、IVF、KDTree）必须提供的操作。
+/// Unified interface for vector indices. Defines the operations that all index implementations
+/// (Flat, HNSW, IVF, KDTree) must provide.
 /// <para>
-/// <b>职责</b>：管理内部 ID 的拓扑结构（图/树/倒排列表），并提供基于相似度的搜索能力。
-/// 向量数据的物理存储由 <see cref="IVectorStore"/> 负责，索引通过其引用获取向量。
+/// <b>Responsibility</b>: manages the topological structure (graph/tree/inverted list) of internal IDs
+/// and provides similarity-based search. Physical storage of vector data is handled by <see cref="IVectorStore"/>;
+/// the index reads vectors through that reference.
 /// </para>
 /// <para>
-/// <b>线程安全</b>：由上层 <c>QuiverSet&lt;TEntity&gt;</c> 的读写锁保证，索引实现本身无需处理并发。
+/// <b>Thread safety</b>: guaranteed by the read-write lock in the upper-layer <c>QuiverSet&lt;TEntity&gt;</c>;
+/// index implementations do not need to handle concurrency themselves.
 /// </para>
 /// </summary>
 /// <seealso cref="FlatIndex{TSim}"/>
@@ -16,42 +19,42 @@
 /// <seealso cref="KDTreeIndex{TSim}"/>
 internal interface IVectorIndex
 {
-    /// <summary>当前索引中的向量数量。</summary>
+    /// <summary>Current number of vectors in the index.</summary>
     int Count { get; }
 
     /// <summary>
-    /// 将指定 ID 注册到索引拓扑结构中。
+    /// Registers the specified ID in the index topology.
     /// <para>
-    /// 向量数据已由调用方写入 <see cref="IVectorStore"/>，
-    /// 索引实现通过 <c>IVectorStore.Get(id)</c> 读取向量进行建图/建树。
+    /// The vector data has already been written to <see cref="IVectorStore"/> by the caller;
+    /// the index implementation reads the vector via <c>IVectorStore.Get(id)</c> to build the graph/tree.
     /// </para>
     /// </summary>
-    /// <param name="id">内部 ID，向量已存入 <see cref="IVectorStore"/>。</param>
+    /// <param name="id">Internal ID; the vector has already been stored in <see cref="IVectorStore"/>.</param>
     void Add(int id);
 
     /// <summary>
-    /// 从索引拓扑结构中移除指定 ID。ID 不存在时静默返回。
-    /// <para>对应的向量数据由 <see cref="IVectorStore"/> 单独管理，此方法不删除向量。</para>
+    /// Removes the specified ID from the index topology. Silently returns if the ID does not exist.
+    /// <para>The corresponding vector data is managed separately by <see cref="IVectorStore"/>; this method does not delete vectors.</para>
     /// </summary>
-    /// <param name="id">要移除的内部 ID。</param>
+    /// <param name="id">The internal ID to remove.</param>
     void Remove(int id);
 
-    /// <summary>清空索引拓扑结构。</summary>
+    /// <summary>Clears the index topology.</summary>
     void Clear();
 
     /// <summary>
-    /// 搜索与查询向量最相似的 Top-K 个结果。
+    /// Searches for the Top-K results most similar to the query vector.
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="topK">返回结果数量上限。</param>
-    /// <returns>按相似度降序排列的 (内部ID, 相似度) 列表。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="topK">Maximum number of results to return.</param>
+    /// <returns>A list of (internal ID, similarity) pairs sorted by similarity in descending order.</returns>
     List<(int Id, float Similarity)> Search(float[] query, int topK);
 
     /// <summary>
-    /// 搜索所有相似度不低于阈值的向量。
+    /// Searches for all vectors whose similarity is at or above the given threshold.
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="threshold">相似度下限（含）。</param>
-    /// <returns>(内部ID, 相似度) 列表，无特定排序保证。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="threshold">Similarity lower bound (inclusive).</param>
+    /// <returns>A list of (internal ID, similarity) pairs in no particular order.</returns>
     List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold);
 }

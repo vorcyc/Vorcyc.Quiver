@@ -1,12 +1,12 @@
-# Vorcyc Quiver 3.1.0 技术文档
+# Vorcyc Quiver 3.2.0 技术文档
 
-![Vorcyc Quiver 3.1.0](logo.jpg "Vorcyc Quiver 3.1.0")
+![Vorcyc Quiver 3.2.0](logo.jpg "Vorcyc Quiver 3.2.0")
 
 > **产品定位**：纯 .NET 实现的嵌入式向量数据库 —— 零原生依赖，进程内运行，无需独立部署数据库服务器  
 > **框架版本**：.NET 10  
 > **命名空间**：`Vorcyc.Quiver`  
 > **设计理念**：类似 EF Core 的 `DbContext` 模式，通过声明式属性标记实现向量数据库的自动发现、索引构建和持久化  
-> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 9 种内置距离度量 + 自定义相似度 · 二进制主存储 + JSON/XML 导出/导入 · WAL 增量持久化 · Schema Migration（属性重命名 / 值转换） · 读写分离锁并发安全 · SIMD 加速相似度计算 · **懒加载分页缓存（LRU，按需实体加载）**
+> **核心特性**：Code-First 声明式实体定义 · 多种 ANN 索引（Flat / HNSW / IVF / KDTree） · 9 种内置距离度量 + 自定义相似度 · 二进制主存储 + JSON/XML 导出/导入 · WAL 增量持久化 · Schema Migration（属性重命名 / 值转换） · 读写分离锁并发安全 · SIMD 加速相似度计算 · **懒加载分页缓存（LRU，按需实体加载）** · **CompactMemory（按需释放内存）**
 > **关键字**：`嵌入式向量数据库` `纯 .NET` `ANN` `近似最近邻搜索` `相似度检索` `HNSW` `IVF` `KDTree` `Code-First` `EF Core 风格` `Embedding` `语义搜索` `人脸识别` `以图搜图` `RAG` `SIMD` `WAL` `Write-Ahead Log` `增量持久化` `崩溃恢复` `Schema Migration` `ISimilarity` `自定义度量`
 > **释名**：Quiver —— 箭袋，装箭（Arrow）的容器，向量的数学本质就是箭头
 
@@ -22,6 +22,19 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 同时，Python 中的名为 Annoy（全称 Approximate Nearest Neighbors Oh Yeah） 的轮子也给了我启发，但是它的 .NET 包装 HNSWSharp 又不支持类似于结构化数据库的设计，且仅提供 HNSW 一种索引类型，缺乏灵活性和多样性。
 
 于是，我决定设计一个全新的向量数据库框架，既要保持 EF Core 式的易用性和声明式建模，又要支持多种 ANN 索引算法以适应不同规模和性能需求的场景，同时还要内置并发安全机制和高效的持久化方案。
+
+---
+
+### 3.2.0 更新说明
+
+> **文件格式兼容性**：v3.2.0 完全向后兼容 v1.x、v2.x、v3.0.0 和 v3.1.0 的数据文件，无需任何迁移。
+
+#### 新增功能
+
+| 功能 | 说明 |
+|------|------|
+| **`CompactMemory()` / `CompactMemoryAsync()`** | 在 `QuiverSet<T>` 上调用，将所有脏页刷写到磁盘后驱逐全部内存页，按需最小化内存占用。在 `FullMemory` 模式下为空操作。向量索引始终驻留内存，不受影响。 |
+| **`CompactAllMemoryAsync()`** | 在 `QuiverDbContext` 上调用，对上下文中所有 `QuiverSet` 一次性执行内存压缩。 |
 
 ---
 
@@ -2723,6 +2736,7 @@ public class SearchService
 | `SaveAsync(path?)` | `Task` | 异步全量保存所有集合到磁盘（WAL 启用时同时清空 WAL） |
 | `SaveChangesAsync()` | `Task` | 仅将未持久化的变更追加到 WAL 文件，O(Δ)（WAL 未启用时等同于 `SaveAsync`） |
 | `CompactAsync()` | `Task` | 创建全量快照 + 清空 WAL（等价于 `SaveAsync`） |
+| `CompactAllMemoryAsync()` | `Task` | 将上下文中所有 `QuiverSet` 的脏页刷盘并驱逐全部内存页。`FullMemory` 模式集合为空操作。 |
 | `LoadAsync(path?)` | `Task` | 异步加载快照 + 回放 WAL（文件不存在静默返回） |
 | `Dispose()` | `void` | 同步释放（不保存） |
 | `DisposeAsync()` | `ValueTask` | 异步释放（WAL 模式调用 `SaveChangesAsync`，否则调用 `SaveAsync`） |
@@ -2736,6 +2750,8 @@ public class SearchService
 | `Count` | `int` | 实体数量（读锁保护，线程安全） |
 | `VectorFields` | `IReadOnlyDictionary<string, int>` | 向量字段名 → 维度的只读映射（惰性缓存） |
 | `IsLazyLoading` | `bool` | 当前是否处于 LRU 分页缓存模式 |
+| `CompactMemory()` | `void` | 刷写脏页并驱逐所有内存页。`FullMemory` 模式下为空操作。 |
+| `CompactMemoryAsync()` | `Task` | `CompactMemory()` 的异步版本，通过 `Task.Run` 卸载到线程池。 |
 
 #### 枚举
 

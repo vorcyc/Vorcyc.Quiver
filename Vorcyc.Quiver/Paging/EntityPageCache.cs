@@ -4,90 +4,90 @@ using System.Runtime.InteropServices;
 namespace Vorcyc.Quiver.Paging;
 
 /// <summary>
-/// 实体分页缓存，支持两种运行模式：
+/// Entity paging cache that supports two operating modes:
 /// <list type="bullet">
-///   <item><b>FullMemory 模式</b>（默认）：所有实体常驻内存字典，行为与原版完全一致，零额外开销。</item>
-///   <item><b>LazyLoading 模式</b>：内存中最多保留 <see cref="_maxPages"/> 页，
-///   超限时将最久未使用的冷页序列化到页文件（.page），按需读回，
-///   实现可控的内存上限。</item>
+///   <item><b>FullMemory mode</b> (default): all entities reside in an in-memory dictionary, behavior identical to the original, zero additional overhead.</item>
+///   <item><b>LazyLoading mode</b>: at most <see cref="_maxPages"/> pages are kept in memory;
+///   when the limit is exceeded, the least-recently-used cold page is serialized to a page file (.qvpg) and reloaded on demand,
+///   providing a controllable memory ceiling.</item>
 /// </list>
 /// <para>
-/// 无论哪种模式，外部接口完全相同：<see cref="Set"/>、<see cref="TryGetValue"/>、
-/// <see cref="Remove"/>、<see cref="Clear"/>、<see cref="Count"/>、<see cref="Values"/>。
-/// 上层代码无需感知内部模式。
+/// Regardless of mode, the external interface is identical: <see cref="Set"/>, <see cref="TryGetValue"/>,
+/// <see cref="Remove"/>, <see cref="Clear"/>, <see cref="Count"/>, <see cref="Values"/>.
+/// Upper-layer code does not need to be aware of the internal mode.
 /// </para>
 /// </summary>
-/// <typeparam name="TEntity">实体类型。</typeparam>
+/// <typeparam name="TEntity">Entity type.</typeparam>
 internal sealed class EntityPageCache<TEntity> : IDisposable
     where TEntity : class, new()
 {
     // ──────────────────────────────────────────────────────────────
-    // 常量
+    // Constants
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 页文件的魔数，用于格式校验。对应 ASCII "QVPG"（Quiver Page）。
+    /// Magic number for page file format validation. Corresponds to ASCII "QVPG" (Quiver Page).
     /// </summary>
     private const uint Magic = 0x51_56_50_47; // "QVPG"
 
     /// <summary>
-    /// 页文件格式版本（v1 = 紧凑二进制）。
+    /// Page file format version (v1 = compact binary).
     /// <para>
-    /// 页文件二进制布局：
+    /// Page file binary layout:
     /// <code>
     /// [4B uint32]  Magic = 0x51565047 ("QVPG")
     /// [1B byte]    Version = 0x01
-    /// [4B int32]   PropCount              ← 属性描述符数量
+    /// [4B int32]   PropCount              ← number of property descriptors
     /// PropDescriptor × PropCount:
-    ///   [string]   PropName               ← BinaryWriter 长度前缀 UTF-8
-    /// [4B int32]   EntityCount            ← 本页实体数
+    ///   [string]   PropName               ← BinaryWriter length-prefixed UTF-8
+    /// [4B int32]   EntityCount            ← number of entities on this page
     /// Entity × EntityCount:
     ///   [4B int32] InternalId
-    ///   按描述符顺序逐字段：[1B bool null标志] + 字段值（类型编码同 BinaryStorageProvider）
+    ///   per-descriptor fields in order: [1B bool null flag] + field value (type encoding same as BinaryStorageProvider)
     /// </code>
     /// </para>
     /// </summary>
     private const byte FormatVersion = 1;
 
     // ──────────────────────────────────────────────────────────────
-    // FullMemory 模式专用
+    // FullMemory mode only
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>FullMemory 模式下的直通字典（即原始 _entities）。</summary>
+    /// <summary>Pass-through dictionary in FullMemory mode (equivalent to the original _entities).</summary>
     private readonly Dictionary<int, TEntity>? _flat;
 
     // ──────────────────────────────────────────────────────────────
-    // LazyLoading 模式专用
+    // LazyLoading mode only
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>内存中的活跃页。键为页 ID，值为页内容。</summary>
+    /// <summary>Active pages in memory. Key is page ID, value is page content.</summary>
     private readonly Dictionary<int, Page>? _loadedPages;
 
-    /// <summary>LRU 链表，头部最热，尾部最冷。存储的是页 ID。</summary>
+    /// <summary>LRU linked list; head is hottest, tail is coldest. Stores page IDs.</summary>
     private readonly LinkedList<int>? _lru;
 
-    /// <summary>页 ID → LRU 链表节点的映射，O(1) 定位。</summary>
+    /// <summary>Page ID → LRU linked-list node mapping for O(1) lookup.</summary>
     private readonly Dictionary<int, LinkedListNode<int>>? _lruNodes;
 
-    /// <summary>内部 ID → 页 ID 的全局目录，常驻内存（每条约 8 字节）。</summary>
+    /// <summary>Global directory of internal ID → page ID, always resident in memory (≈8 bytes per entry).</summary>
     private readonly Dictionary<int, int>? _idToPage;
 
-    /// <summary>页 ID → 页文件路径的映射（冷页文件目录）。</summary>
+    /// <summary>Page ID → page file path mapping (cold-page file directory).</summary>
     private readonly Dictionary<int, string>? _pageFiles;
 
-    /// <summary>最大活跃页数量上限，超出时淘汰最冷页。</summary>
+    /// <summary>Maximum number of active pages; the coldest page is evicted when this limit is exceeded.</summary>
     private readonly int _maxPages;
 
-    /// <summary>每页最大实体数量，超出时开新页。</summary>
+    /// <summary>Maximum number of entities per page; a new page is allocated when this is exceeded.</summary>
     private readonly int _pageSize;
 
-    /// <summary>当前页 ID 的最大值（分配新页时递增）。</summary>
+    /// <summary>Highest allocated page ID (incremented when a new page is created).</summary>
     private int _nextPageId;
 
-    /// <summary>当前活跃写入页（新实体写入此页）。</summary>
+    /// <summary>Currently active write page (new entities are written here).</summary>
     private int _currentWritePageId;
 
-    /// <summary>实体属性描述符缓存（属性名 + PropertyInfo），按名称排序，与写文件顺序一致。</summary>
+    /// <summary>Cached entity property descriptors (property name + PropertyInfo), sorted by name to match file write order.</summary>
     private static readonly (string Name, PropertyInfo Info)[] PropDescriptors =
         typeof(TEntity)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
@@ -96,22 +96,22 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
             .Select(p => (p.Name, p))
             .ToArray();
 
-    /// <summary>页文件存放目录。</summary>
+    /// <summary>Directory where page files are stored.</summary>
     private readonly string? _pageDir;
 
     // ──────────────────────────────────────────────────────────────
-    // 共用
+    // Shared
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>是否处于 LazyLoading 模式。</summary>
+    /// <summary>Whether the cache is operating in LazyLoading mode.</summary>
     public bool IsLazy { get; }
 
     // ──────────────────────────────────────────────────────────────
-    // 构造
+    // Construction
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 以 FullMemory 模式初始化（与原版行为完全一致）。
+    /// Initializes the cache in FullMemory mode (behavior identical to the original).
     /// </summary>
     public EntityPageCache()
     {
@@ -120,11 +120,11 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 以 LazyLoading 模式初始化。
+    /// Initializes the cache in LazyLoading mode.
     /// </summary>
-    /// <param name="pageDir">页文件存放目录，不存在时自动创建。</param>
-    /// <param name="maxPages">内存中最多保留的页数，超限时淘汰最冷的页。</param>
-    /// <param name="pageSize">每页最大实体数。</param>
+    /// <param name="pageDir">Directory where page files are stored; created automatically if it does not exist.</param>
+    /// <param name="maxPages">Maximum number of pages to keep in memory; the coldest page is evicted when exceeded.</param>
+    /// <param name="pageSize">Maximum number of entities per page.</param>
     public EntityPageCache(string pageDir, int maxPages, int pageSize)
     {
         IsLazy = true;
@@ -141,16 +141,16 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     // ──────────────────────────────────────────────────────────────
-    // 公共接口
+    // Public interface
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>当前实体总数。</summary>
+    /// <summary>Total number of entities currently stored.</summary>
     public int Count => IsLazy
         ? _idToPage!.Count
         : _flat!.Count;
 
     /// <summary>
-    /// 写入或更新一个实体。
+    /// Writes or updates an entity.
     /// </summary>
     public void Set(int id, TEntity entity)
     {
@@ -160,29 +160,29 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
             return;
         }
 
-        // LazyLoading 模式
+        // LazyLoading mode
         if (_idToPage!.TryGetValue(id, out var existingPageId))
         {
-            // 更新已存在的实体
+            // Update existing entity
             var page = GetOrLoadPage(existingPageId);
             page.Entities[id] = entity;
             page.IsDirty = true;
             return;
         }
 
-        // 新实体：写入当前写入页
+        // New entity: write to the current write page
         var writePage = GetOrLoadPage(_currentWritePageId);
         writePage.Entities[id] = entity;
         writePage.IsDirty = true;
         _idToPage[id] = _currentWritePageId;
 
-        // 当前写入页已满，分配新页
+        // Current write page is full — allocate a new one
         if (writePage.Entities.Count >= _pageSize)
             _currentWritePageId = AllocatePage();
     }
 
     /// <summary>
-    /// 尝试获取实体。命中内存缓存时 O(1)，否则触发页面加载（磁盘 I/O）。
+    /// Attempts to retrieve an entity. O(1) on memory cache hit; otherwise triggers a page load (disk I/O).
     /// </summary>
     public bool TryGetValue(int id, out TEntity entity)
     {
@@ -200,7 +200,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 删除一个实体。
+    /// Removes an entity.
     /// </summary>
     public bool Remove(int id)
     {
@@ -212,7 +212,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
 
         _idToPage.Remove(id);
 
-        // 若页在内存中，直接从页中移除
+        // Page is in memory — remove directly
         if (_loadedPages!.TryGetValue(pageId, out var page))
         {
             var removed = page.Entities.Remove(id);
@@ -220,7 +220,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
             return removed;
         }
 
-        // 页在磁盘上：加载后移除（让 LRU 决定何时写回）
+        // Page is on disk: load it and remove (let LRU decide when to write back)
         var diskPage = GetOrLoadPage(pageId);
         var result = diskPage.Entities.Remove(id);
         diskPage.IsDirty = true;
@@ -228,7 +228,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 清空所有实体并删除所有页文件。
+    /// Clears all entities and deletes all page files.
     /// </summary>
     public void Clear()
     {
@@ -238,7 +238,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
             return;
         }
 
-        // 删除所有页文件
+        // Delete all page files
         foreach (var filePath in _pageFiles!.Values)
         {
             if (File.Exists(filePath))
@@ -255,7 +255,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 枚举所有实体值。在 LazyLoading 模式下，会按顺序加载所有页（可能触发大量 I/O）。
+    /// Enumerates all entity values. In LazyLoading mode, all pages are loaded sequentially (may trigger significant I/O).
     /// </summary>
     public IEnumerable<TEntity> Values
     {
@@ -268,7 +268,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
                 yield break;
             }
 
-            // 收集所有页 ID（包括内存页和磁盘页）
+            // Collect all page IDs (both in-memory and on-disk pages)
             var allPageIds = new HashSet<int>(_idToPage!.Values);
             foreach (var pageId in allPageIds)
             {
@@ -280,7 +280,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 将所有脏页强制刷回磁盘。在 FullMemory 模式下无操作。
+    /// Flushes all dirty pages to disk. No-op in FullMemory mode.
     /// </summary>
     public void FlushDirty()
     {
@@ -292,12 +292,40 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
         }
     }
 
+    /// <summary>
+    /// Flushes all dirty pages to disk and evicts all loaded pages from memory, minimizing the memory footprint.
+    /// Pages are reloaded from disk on next access.
+    /// No-op in FullMemory mode.
+    /// <para>
+    /// <b>Note</b>: Vector index structures are not affected and always remain in memory.
+    /// </para>
+    /// </summary>
+    public void CompactMemory()
+    {
+        if (!IsLazy) return;
+
+        // 1. Write back all dirty pages
+        foreach (var (pageId, page) in _loadedPages!)
+        {
+            if (page.IsDirty)
+                WritePage(pageId, page);
+        }
+
+        // 2. Evict all loaded pages from memory; directory indices (_idToPage, _pageFiles) are preserved
+        _loadedPages.Clear();
+        _lru!.Clear();
+        _lruNodes!.Clear();
+
+        // 3. Allocate a fresh write page so subsequent writes can proceed immediately
+        _currentWritePageId = AllocatePage();
+    }
+
     // ──────────────────────────────────────────────────────────────
-    // LazyLoading 内部实现
+    // LazyLoading internals
     // ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// 分配一个新页，注册到 LRU 缓存中。
+    /// Allocates a new page and registers it in the LRU cache.
     /// </summary>
     private int AllocatePage()
     {
@@ -308,22 +336,22 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 获取或从磁盘加载指定页，并更新 LRU 热度。
+    /// Gets or loads the specified page from disk, updating its LRU position.
     /// </summary>
     private Page GetOrLoadPage(int pageId)
     {
-        // 命中内存缓存
+        // Memory cache hit
         if (_loadedPages!.TryGetValue(pageId, out var page))
         {
             TouchLru(pageId);
             return page;
         }
 
-        // 缓存已满，先淘汰最冷的页
+        // Cache full — evict the coldest page first
         if (_loadedPages.Count >= _maxPages)
             EvictColdest();
 
-        // 从磁盘加载
+        // Load from disk
         page = _pageFiles!.TryGetValue(pageId, out var filePath) && File.Exists(filePath)
             ? ReadPage(filePath)
             : new Page();
@@ -333,7 +361,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 淘汰 LRU 尾部最冷的页：若脏则先写回磁盘，再从内存移除。
+    /// Evicts the coldest (LRU tail) page: writes it back to disk if dirty, then removes it from memory.
     /// </summary>
     private void EvictColdest()
     {
@@ -365,12 +393,12 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 将页序列化到页文件（紧凑二进制格式 v1）。
+    /// Serializes a page to a page file (compact binary format v1).
     /// <para>
-    /// 格式：[魔数 uint32] [版本 byte=1] [属性数 int32]
-    ///   ┗ 每个属性描述符：[属性名 string]
-    ///   [实体数 int32]
-    ///     ┗ 每个实体：[internalId int32] + 按描述符顺序的属性值（null标志 bool + 数据）
+    /// Format: [magic uint32] [version byte=1] [prop count int32]
+    ///   ┗ per property descriptor: [property name string]
+    ///   [entity count int32]
+    ///     ┗ per entity: [internalId int32] + property values in descriptor order (null flag bool + data)
     /// </para>
     /// </summary>
     private void WritePage(int pageId, Page page)
@@ -385,7 +413,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
         bw.Write(Magic);
         bw.Write(FormatVersion);
 
-        // 写属性描述符（名称列表，供读取时按序匹配）
+        // Write property descriptors (name list for ordered matching when reading)
         bw.Write(PropDescriptors.Length);
         foreach (var (name, _) in PropDescriptors)
             bw.Write(name);
@@ -402,7 +430,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     }
 
     /// <summary>
-    /// 从页文件反序列化页内容。支持 v1（二进制）格式。
+    /// Deserializes page content from a page file. Supports v1 (binary) format.
     /// </summary>
     private static Page ReadPage(string filePath)
     {
@@ -418,7 +446,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
         if (version != 1)
             throw new InvalidDataException($"Unsupported page file version {version}: {filePath}");
 
-        // 读属性描述符，与当前类型属性建立映射
+        // Read property descriptors and build a mapping to the current type's properties
         var propCount = br.ReadInt32();
         var propMap = new PropertyInfo?[propCount];
         var propTypes = new Type?[propCount];
@@ -452,7 +480,7 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
         return page;
     }
 
-    // ── 属性值二进制写入 ──
+    // ── Property value binary write ──
 
     private static void WritePropertyValue(BinaryWriter bw, Type type, object? value)
     {
@@ -504,12 +532,12 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
         }
         else
         {
-            // 兜底：toString 存储（理论上不触发，因 QuiverSet 已校验属性类型）
+            // Fallback: store as toString() (should never be reached since QuiverSet validates property types)
             bw.Write(value.ToString() ?? string.Empty);
         }
     }
 
-    // ── 属性值二进制读取 ──
+    // ── Property value binary read ──
 
     private static object? ReadPropertyValue(BinaryReader br, Type? type)
     {
@@ -563,18 +591,18 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
             MemoryMarshal.Cast<byte, double>(bytes).CopyTo(arr);
             return arr;
         }
-        // 兜底 string（对应写入时的兜底）
+        // Fallback string (matches the write-side fallback)
         return br.ReadString();
     }
 
-    /// <summary>跳过未知类型属性值（类型为 null 时用于前向兼容）。读取 string 作为跳过策略。</summary>
+    /// <summary>Skips an unknown-type property value (used for forward compatibility when type is null). Reads a string as the skip strategy.</summary>
     private static void SkipUnknown(BinaryReader br) => br.ReadString();
 
     private string GetPageFilePath(int pageId)
         => Path.Combine(_pageDir!, $"page_{pageId:D8}.qvpg");
 
     // ──────────────────────────────────────────────────────────────
-    // 内部数据结构
+    // Internal data structures
     // ──────────────────────────────────────────────────────────────
 
     private sealed class Page

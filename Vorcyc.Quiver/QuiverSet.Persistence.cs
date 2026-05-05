@@ -2,29 +2,29 @@ namespace Vorcyc.Quiver;
 
 public partial class QuiverSet<TEntity>
 {
-    #region 持久化支持
+    #region Persistence support
 
-    // ── 变更追踪（WAL 增量持久化支持）──
+    // ── Change tracking (WAL incremental persistence support) ──
 
     /// <summary>
-    /// 变更日志缓冲区。记录自上次 <see cref="DrainChanges"/> 以来的所有写操作。
+    /// Change log buffer. Records all write operations since the last <see cref="DrainChanges"/> call.
     /// <para>
-    /// 元组含义：
+    /// Tuple meaning:
     /// <list type="bullet">
-    ///   <item><c>Op</c>：操作类型（1=Add, 2=Remove, 3=Clear）</item>
-    ///   <item><c>Key</c>：实体主键（Clear 时为 <c>null</c>）</item>
-    ///   <item><c>Entity</c>：实体实例（仅 Add 时非空）</item>
+    ///   <item><c>Op</c>: Operation type (1=Add, 2=Remove, 3=Clear)</item>
+    ///   <item><c>Key</c>: Entity primary key (null for Clear)</item>
+    ///   <item><c>Entity</c>: Entity instance (non-null only for Add)</item>
     /// </list>
     /// </para>
     /// <para>
-    /// 仅在写锁内访问，无需额外同步。加载（<see cref="LoadEntities"/>）和回放
-    /// （<see cref="ReplayAdd"/>/<see cref="ReplayRemove"/>/<see cref="ReplayClear"/>）
-    /// 期间不记录变更，避免循环写入。
+    /// Accessed only under the write lock; no additional synchronization is needed. Load (<see cref="LoadEntities"/>)
+    /// and replay (<see cref="ReplayAdd"/>/<see cref="ReplayRemove"/>/<see cref="ReplayClear"/>)
+    /// do not record changes to avoid circular writes.
     /// </para>
     /// </summary>
     private readonly List<(byte Op, object? Key, object? Entity)> _changeLog = [];
 
-    /// <summary>是否有未持久化的变更。读锁保护。</summary>
+    /// <summary>Whether there are unpersisted changes. Protected by the read lock.</summary>
     internal bool HasPendingChanges
     {
         get
@@ -37,12 +37,12 @@ public partial class QuiverSet<TEntity>
     }
 
     /// <summary>
-    /// 获取并清空变更日志（快照 + 清除语义）。
+    /// Gets and clears the change log (snapshot-and-drain semantics).
     /// <para>
-    /// 由 <see cref="QuiverDbContext.SaveChangesAsync"/> 调用，将变更转为 WAL 记录后持久化。
+    /// Called by <see cref="QuiverDbContext.SaveChangesAsync"/> to convert changes into WAL records for persistence.
     /// </para>
     /// </summary>
-    /// <returns>自上次调用以来的所有变更记录。无变更时返回空列表。</returns>
+    /// <returns>All change records since the last call. Returns an empty list when there are no changes.</returns>
     internal List<(byte Op, object? Key, object? Entity)> DrainChanges()
     {
         ThrowIfDisposed();
@@ -58,12 +58,12 @@ public partial class QuiverSet<TEntity>
         finally { _lock.ExitWriteLock(); }
     }
 
-    // ── WAL 回放方法 ──
-    // 回放期间不记录变更（logChanges: false），避免循环写入。
+    // ── WAL replay methods ──
+    // Changes are not recorded during replay (logChanges: false) to avoid circular writes.
 
     /// <summary>
-    /// 回放 WAL 的 Add 操作。不触发变更日志记录。
-    /// <para>主键冲突时静默跳过（WAL 可能包含与快照重复的记录）。</para>
+    /// Replays a WAL Add operation. Does not trigger change log recording.
+    /// <para>Silently skips on primary key conflict (WAL may contain records already present in the snapshot).</para>
     /// </summary>
     internal void ReplayAdd(TEntity entity)
     {
@@ -79,7 +79,7 @@ public partial class QuiverSet<TEntity>
         finally { _lock.ExitWriteLock(); }
     }
 
-    /// <summary>回放 WAL 的 Remove 操作。不触发变更日志记录。</summary>
+    /// <summary>Replays a WAL Remove operation. Does not trigger change log recording.</summary>
     internal void ReplayRemove(object key)
     {
         ThrowIfDisposed();
@@ -88,7 +88,7 @@ public partial class QuiverSet<TEntity>
         finally { _lock.ExitWriteLock(); }
     }
 
-    /// <summary>回放 WAL 的 Clear 操作。不触发变更日志记录。</summary>
+    /// <summary>Replays a WAL Clear operation. Does not trigger change log recording.</summary>
     internal void ReplayClear()
     {
         ThrowIfDisposed();
@@ -107,8 +107,8 @@ public partial class QuiverSet<TEntity>
     }
 
     /// <summary>
-    /// 获取所有实体的快照副本，供 <see cref="QuiverDbContext.SaveAsync"/> 持久化使用。
-    /// 返回的是值的浅拷贝列表，读锁释放后外部修改不影响内部数据。
+    /// Returns a snapshot copy of all entities for use by <see cref="QuiverDbContext.SaveAsync"/> during persistence.
+    /// The returned list is a shallow copy; external modifications after the read lock is released do not affect internal data.
     /// </summary>
     internal IEnumerable<TEntity> GetAll()
     {
@@ -119,10 +119,10 @@ public partial class QuiverSet<TEntity>
     }
 
     /// <summary>
-    /// 从持久化数据恢复实体。逐个调用 <see cref="AddCore"/> 重建索引。
-    /// 供 <see cref="QuiverDbContext.LoadAsync"/> 使用。不记录变更日志。
+    /// Restores entities from persisted data. Calls <see cref="AddCore"/> for each entity to rebuild the index.
+    /// Used by <see cref="QuiverDbContext.LoadAsync"/>. Does not record change log entries.
     /// </summary>
-    /// <param name="entities">从存储加载的实体序列。</param>
+    /// <param name="entities">The entity sequence loaded from storage.</param>
     internal void LoadEntities(IEnumerable<TEntity> entities)
     {
         ThrowIfDisposed();

@@ -3,85 +3,86 @@
 namespace Vorcyc.Quiver.Indexing;
 
 /// <summary>
-/// KD-Tree（K-Dimensional Tree）索引：空间二叉划分树，用于精确最近邻搜索。
+/// KD-Tree (K-Dimensional Tree) index: a spatial binary partitioning tree for exact nearest-neighbor search.
 /// <para>
-/// <b>核心思想</b>：沿各维度交替切分空间，构建一棵二叉搜索树。
-/// 搜索时利用剪枝策略跳过不可能包含更近邻居的子树，避免全量遍历。
+/// <b>Core idea</b>: alternately partitions the space along each dimension to build a binary search tree.
+/// During search, a pruning strategy skips subtrees that cannot contain a closer neighbor, avoiding full traversal.
 /// </para>
 /// <para>
-/// <b>适用场景</b>：
+/// <b>Suitable scenarios</b>:
 /// <list type="bullet">
-///   <item>低维向量（维度 &lt; 20）：O(log n) 搜索，优于暴力扫描</item>
-///   <item>需要精确结果（非近似）：KD-Tree 不会遗漏最近邻</item>
+///   <item>Low-dimensional vectors (dimension &lt; 20): O(log n) search, outperforming brute-force scan</item>
+///   <item>Exact results required (non-approximate): KD-Tree never misses the nearest neighbor</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>维度诅咒</b>：维度超过约 20 时，剪枝效果急剧下降，几乎每个子树都需要访问，
-/// 退化为 O(n) 暴力搜索。高维场景应使用 <see cref="HnswIndex{TSim}"/>。
+/// <b>Curse of dimensionality</b>: when dimension exceeds ~20, pruning effectiveness drops sharply and nearly every subtree
+/// must be visited, degrading to O(n) brute-force search. Use <see cref="HnswIndex{TSim}"/> for high-dimensional scenarios.
 /// </para>
 /// <para>
-/// <b>延迟构建</b>：树在首次搜索时构建。每次 <see cref="Add"/> 或 <see cref="Remove"/> 后标记需要重建，
-/// 下次搜索时自动重新构建整棵树（静态重建策略，简单但不适合频繁增删场景）。
+/// <b>Lazy build</b>: the tree is built on the first search. After each <see cref="Add"/> or <see cref="Remove"/>, the tree
+/// is marked for rebuild and automatically reconstructed from scratch on the next search
+/// (static rebuild strategy — simple, but not ideal for frequent insert/delete workloads).
 /// </para>
 /// </summary>
-/// <typeparam name="TSim">相似度算法类型，须为 struct 以启用 JIT 特化。</typeparam>
+/// <typeparam name="TSim">Similarity algorithm type; must be a struct to enable JIT specialization.</typeparam>
 internal sealed class KDTreeIndex<TSim> : IVectorIndex
     where TSim : struct, ISimilarity<float>
 {
-    /// <summary>向量数据存储，由外部注入。</summary>
+    /// <summary>Vector data store, injected externally.</summary>
     private readonly IVectorStore _vectorStore;
 
-    /// <summary>索引中已注册的内部 ID 集合。向量数据由 <see cref="_vectorStore"/> 管理。</summary>
+    /// <summary>Set of internal IDs registered in the index. Vector data is managed by <see cref="_vectorStore"/>.</summary>
     private readonly HashSet<int> _ids = [];
 
-    /// <summary>KD-Tree 的根节点。空集合或未构建时为 <c>null</c>。</summary>
+    /// <summary>Root node of the KD-Tree. <c>null</c> when the collection is empty or the tree has not yet been built.</summary>
     private KDNode? _root;
 
-    /// <summary>树是否已构建。Add/Remove 后标记为 false，下次搜索时触发重建。</summary>
+    /// <summary>Whether the tree has been built. Set to false after Add/Remove; triggers a rebuild on the next search.</summary>
     private bool _isBuilt;
 
-    #region 节点定义
+    #region Node definition
 
     /// <summary>
-    /// KD-Tree 的节点。每个节点存储内部 ID 和切分信息，沿某一维度将空间二分。
-    /// 向量数据由 <see cref="IVectorStore"/> 统一管理，节点不持有向量引用。
+    /// A node in the KD-Tree. Each node stores an internal ID and split information, partitioning the space along one dimension.
+    /// Vector data is managed centrally by <see cref="IVectorStore"/>; nodes do not hold vector references.
     /// <para>
-    /// 结构示意（3 维空间，按 x → y → z 循环切分）：
+    /// Structure example (3D space, cycling through x → y → z splits):
     /// <code>
-    ///          [x=5]          ← 根节点，沿 x 轴切分
+    ///          [x=5]          ← root node, split along x axis
     ///         /     \
-    ///      [y=3]   [y=7]     ← 第 1 层，沿 y 轴切分
+    ///      [y=3]   [y=7]     ← depth 1, split along y axis
     ///      /  \    /  \
-    ///   [z=1] ... ...  ...   ← 第 2 层，沿 z 轴切分
+    ///   [z=1] ... ...  ...   ← depth 2, split along z axis
     /// </code>
     /// </para>
     /// </summary>
     private sealed class KDNode
     {
-        /// <summary>节点对应的向量内部 ID。</summary>
+        /// <summary>The internal ID of the vector stored at this node.</summary>
         public int Id;
 
         /// <summary>
-        /// 切分维度（0-based）。按 <c>depth % 总维度数</c> 循环选择。
+        /// Split dimension (0-based). Chosen cyclically as <c>depth % total dimensions</c>.
         /// </summary>
         public int SplitDimension;
 
-        /// <summary>切分值：该节点在 <see cref="SplitDimension"/> 维度上的坐标值。</summary>
+        /// <summary>Split value: the coordinate of this node along <see cref="SplitDimension"/>.</summary>
         public float SplitValue;
 
-        /// <summary>左子树：<see cref="SplitDimension"/> 维度上坐标值 ≤ <see cref="SplitValue"/> 的节点。</summary>
+        /// <summary>Left subtree: nodes whose coordinate along <see cref="SplitDimension"/> is ≤ <see cref="SplitValue"/>.</summary>
         public KDNode? Left;
 
-        /// <summary>右子树：<see cref="SplitDimension"/> 维度上坐标值 &gt; <see cref="SplitValue"/> 的节点。</summary>
+        /// <summary>Right subtree: nodes whose coordinate along <see cref="SplitDimension"/> is &gt; <see cref="SplitValue"/>.</summary>
         public KDNode? Right;
     }
 
     #endregion
 
     /// <summary>
-    /// 创建 KD-Tree 索引实例。
+    /// Creates a KD-Tree index instance.
     /// </summary>
-    /// <param name="vectorStore">向量数据存储。</param>
+    /// <param name="vectorStore">Vector data store.</param>
     public KDTreeIndex(IVectorStore vectorStore)
     {
         _vectorStore = vectorStore;
@@ -91,7 +92,7 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
     public int Count => _ids.Count;
 
     /// <inheritdoc />
-    /// <remarks>添加后标记树需要重建。新向量不会立即插入树中，而是在下次搜索时触发全量重建。</remarks>
+    /// <remarks>Marks the tree for rebuild after adding. The new vector is not inserted immediately; a full rebuild is triggered on the next search.</remarks>
     public void Add(int id)
     {
         _ids.Add(id);
@@ -99,7 +100,7 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
     }
 
     /// <inheritdoc />
-    /// <remarks>删除后标记树需要重建。</remarks>
+    /// <remarks>Marks the tree for rebuild after removal.</remarks>
     public void Remove(int id)
     {
         if (_ids.Remove(id))
@@ -115,11 +116,11 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 搜索与查询向量最相似的 Top-K 个结果。利用 KD-Tree 的空间剪枝避免遍历所有节点。
+    /// Searches for the Top-K results most similar to the query vector, using KD-Tree spatial pruning to avoid visiting all nodes.
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="topK">返回结果数量上限。</param>
-    /// <returns>按相似度降序排列的 (内部ID, 相似度) 列表。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="topK">Maximum number of results to return.</param>
+    /// <returns>A list of (internal ID, similarity) pairs sorted by similarity in descending order.</returns>
     public List<(int Id, float Similarity)> Search(float[] query, int topK)
     {
         if (_ids.Count == 0) return [];
@@ -143,12 +144,12 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 搜索所有相似度不低于阈值的向量。
-    /// KD-Tree 的剪枝难以直接应用于阈值搜索，因此退化为暴力遍历所有向量。
+    /// Searches for all vectors whose similarity is at or above the given threshold.
+    /// KD-Tree pruning cannot be applied directly to threshold searches, so this falls back to brute-force traversal of all vectors.
     /// </summary>
-    /// <param name="query">查询向量。</param>
-    /// <param name="threshold">相似度下限（含）。</param>
-    /// <returns>满足阈值条件的 (内部ID, 相似度) 列表，无特定排序。</returns>
+    /// <param name="query">The query vector.</param>
+    /// <param name="threshold">Similarity lower bound (inclusive).</param>
+    /// <returns>A list of (internal ID, similarity) pairs meeting the threshold condition, in no particular order.</returns>
     public List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold)
     {
         var results = new List<(int Id, float Similarity)>();
@@ -161,30 +162,30 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
         return results;
     }
 
-    #region KD-Tree 构建
+    #region KD-Tree construction
 
     /// <summary>
-    /// 确保 KD-Tree 已构建。首次搜索或数据变更后触发全量重建。
+    /// Ensures the KD-Tree is built. Triggers a full rebuild on the first search or after data changes.
     /// </summary>
     private void EnsureBuilt()
     {
         if (_isBuilt && _root != null) return;
 
-        // 从 store 读取向量并物化，供排序和切分使用
+        // Materialize vectors from the store for sorting and splitting
         var items = _ids.Select(id => (Id: id, Vector: _vectorStore.Get(id).ToArray())).ToList();
         _root = BuildTree(items, 0);
         _isBuilt = true;
     }
 
     /// <summary>
-    /// 递归构建平衡 KD-Tree。每层选择一个维度，按该维度排序取中位数作为切分点。
+    /// Recursively builds a balanced KD-Tree. At each depth, selects a split dimension and uses the median as the split point.
     /// <para>
-    /// 中位数切分保证树是平衡的（左右子树大小最多相差 1），树高为 O(log n)。
+    /// Median splitting guarantees a balanced tree (left and right subtrees differ in size by at most 1), giving O(log n) height.
     /// </para>
     /// </summary>
-    /// <param name="items">待构建的 (ID, 向量) 列表。向量从 store 物化，仅在构建期间使用。</param>
-    /// <param name="depth">当前递归深度，用于决定切分维度。</param>
-    /// <returns>子树根节点；空列表时返回 <c>null</c>。</returns>
+    /// <param name="items">List of (ID, vector) pairs to build from. Vectors are materialized from the store for the duration of construction only.</param>
+    /// <param name="depth">Current recursion depth, used to determine the split dimension.</param>
+    /// <returns>The subtree root node; <c>null</c> when the list is empty.</returns>
     private static KDNode? BuildTree(List<(int Id, float[] Vector)> items, int depth)
     {
         if (items.Count == 0) return null;
@@ -207,10 +208,10 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
 
     #endregion
 
-    #region KD-Tree 搜索（带剪枝的深度优先搜索）
+    #region KD-Tree search (depth-first search with pruning)
 
     /// <summary>
-    /// 递归搜索 KD-Tree 节点，使用最小堆维护 Top-K 结果并利用空间剪枝优化。
+    /// Recursively searches KD-Tree nodes, maintaining Top-K results in a min-heap and applying spatial pruning.
     /// </summary>
     private void SearchNode(
         KDNode? node,
@@ -221,7 +222,7 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
     {
         if (node == null) return;
 
-        // 从 store 读取节点向量并计算相似度
+        // Read the node's vector from the store and compute similarity
         var sim = TSim.Compute(query, _vectorStore.Get(node.Id));
 
         if (results.Count < topK)
@@ -246,7 +247,7 @@ internal sealed class KDTreeIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// 将相似度转换为估计的欧几里得搜索半径，用于 KD-Tree 的空间剪枝。
+    /// Converts a similarity score to an estimated Euclidean search radius for KD-Tree spatial pruning.
     /// </summary>
     private static float EstimateRadius(float similarity, int dim)
     {

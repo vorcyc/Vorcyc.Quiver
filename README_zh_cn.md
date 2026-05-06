@@ -1,6 +1,6 @@
-# Vorcyc Quiver 3.2.0 技术文档
+# Vorcyc Quiver 3.2.1 技术文档
 
-![Vorcyc Quiver 3.2.0](logo.jpg "Vorcyc Quiver 3.2.0")
+![Vorcyc Quiver 3.2.1](logo.jpg "Vorcyc Quiver 3.2.1")
 
 > **产品定位**：纯 .NET 实现的嵌入式向量数据库 —— 零原生依赖，进程内运行，无需独立部署数据库服务器  
 > **框架版本**：.NET 10  
@@ -22,6 +22,18 @@ Quiver 的创作灵感，最早可追溯到我编写 Vorcyc.AwesomeAI.Ash 类，
 同时，Python 中的名为 Annoy（全称 Approximate Nearest Neighbors Oh Yeah） 的轮子也给了我启发，但是它的 .NET 包装 HNSWSharp 又不支持类似于结构化数据库的设计，且仅提供 HNSW 一种索引类型，缺乏灵活性和多样性。
 
 于是，我决定设计一个全新的向量数据库框架，既要保持 EF Core 式的易用性和声明式建模，又要支持多种 ANN 索引算法以适应不同规模和性能需求的场景，同时还要内置并发安全机制和高效的持久化方案。
+
+---
+
+### 3.2.1 更新说明
+
+> **文件格式兼容性**：v3.2.1 完全向后兼容 v1.x、v2.x、v3.0.0、v3.1.0 和 v3.2.0 的所有数据文件，无需任何迁移。
+
+#### 缺陷修复
+
+| 修复项 | 说明 |
+|--------|------|
+| **`EntityPageCache` 线程安全修复** | 修复了 `LazyPaging` 模式下的数据竞争问题：当多线程同时通过 `Parallel.ForEach` 调用 `Find` / `Search` 时，内部 LRU 结构（`_loadedPages`、`_lru`、`_lruNodes`）会发生并发写冲突。现已在 `GetOrLoadPage()`、`FlushDirty()`、`CompactMemory()`、`Clear()` 中通过 `_pageLock` 对所有 LRU 状态变更进行保护。`FullMemory` 模式不受影响（零开销）。 |
 
 ---
 

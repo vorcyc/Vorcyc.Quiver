@@ -1,6 +1,6 @@
 ﻿# Vorcyc.Quiver 技术方案文档
 
-> **版本**：3.2.0
+> **版本**：3.2.1
 > **目标框架**：.NET 10  
 > **许可证**：MIT  
 > **NuGet**：https://www.nuget.org/packages/Vorcyc.Quiver  
@@ -11,6 +11,29 @@
 ## 2.0.0 更新说明（v2.x 历史变更，已整合进当前版本）
 
 > **文件格式兼容性**：v3.1.0 完全向后兼容 v1.x、v2.x 和 v3.0.0 的二进制数据文件（Magic `QDB\x01` / `QDB\x02`）。WAL 文件均可直接加载，无需任何迁移。持久化层仅存储实体属性数据，不涉及度量/索引/相似度算法的元数据，因此架构重构对文件格式零影响。
+
+---
+
+---
+
+## 3.2.1 更新说明
+
+> **文件格式兼容性**：v3.2.1 完全向后兼容 v1.x、v2.x、v3.0.0、v3.1.0 和 v3.2.0 的所有数据文件。
+
+### 缺陷修复：`EntityPageCache` 并发竞态
+
+**问题**：在 `LazyPaging` 模式下，若多线程（如 `Parallel.ForEach`）同时调用 `Find` / `Search`，会在 `QuiverSet` 读锁内并发进入 `GetOrLoadPage()`，而该路径会变更内部 LRU 结构（`_loadedPages`、`_lru`、`_lruNodes`）。`ReaderWriterLockSlim` 的读锁允许多线程共享，因此并不阻止 LRU 的并发写，进而导致数据竞争和不可预期的异常（如 `KeyNotFoundException`、`InvalidOperationException`）。
+
+**修复方案**：在 `EntityPageCache<TEntity>` 中引入独立的 `private readonly Lock _pageLock`，对所有变更 LRU 状态的路径加以保护：
+
+| 保护路径 | 说明 |
+|---------|------|
+| `GetOrLoadPage()` | 命中时 `TouchLru()`、缺页时 `EvictColdest()` + `AddToLru()` + 页文件加载，全部在 `_pageLock` 内执行 |
+| `FlushDirty()` | 遍历并写回脏页 |
+| `CompactMemory()` | 刷写后清空整个 LRU |
+| `Clear()` | 清空页目录与 LRU 结构 |
+
+`FullMemory` 模式无任何 LRU 结构，不受影响，零开销。
 
 ---
 

@@ -1,12 +1,22 @@
-﻿# Vorcyc Quiver 3.2.0
+﻿# Vorcyc Quiver 3.2.1
 
-![Vorcyc Quiver 3.2.0](logo.jpg "Vorcyc Quiver 3.2.0")
+![Vorcyc Quiver 3.2.1](logo.jpg "Vorcyc Quiver 3.2.1")
 
 > A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required.
 
 📖 [Github Repo (full documention)](https://github.com/vorcyc/Vorcyc.Quiver)
 
 **Quiver** draws on EF Core's `DbContext` design pattern, allowing developers to define entities and indexing strategies through declarative attributes such as `[QuiverKey]`, `[QuiverVector]`, and `[QuiverIndex]`, with the framework automatically completing model discovery, index construction, and persistence management at runtime.
+
+---
+
+## 🐛 What's Fixed in 3.2.1
+
+> v3.2.1 is fully backward-compatible with all previous data files.
+
+| Fix | Description |
+|-----|-------------|
+| **`EntityPageCache` thread-safety** | Fixed a data race in `LazyPaging` mode: concurrent reads via `Parallel.ForEach` (e.g., multiple threads calling `Find` / `Search` simultaneously) could corrupt the internal LRU structures (`_loadedPages`, `_lru`, `_lruNodes`). All LRU-mutating paths are now protected by an internal `Lock (_pageLock)`. `FullMemory` mode is unaffected. |
 
 ---
 

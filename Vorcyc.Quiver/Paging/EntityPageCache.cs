@@ -75,6 +75,13 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     /// <summary>Page ID → page file path mapping (cold-page file directory).</summary>
     private readonly Dictionary<int, string>? _pageFiles;
 
+    /// <summary>
+    /// Guards all LRU state (_loadedPages, _lru, _lruNodes, _idToPage, _pageFiles, _currentWritePageId).
+    /// Required because QuiverSet's ReaderWriterLockSlim allows multiple concurrent readers,
+    /// but LRU "reads" mutate internal state (TouchLru, EvictColdest).
+    /// </summary>
+    private readonly Lock _pageLock = new();
+
     /// <summary>Maximum number of active pages; the coldest page is evicted when this limit is exceeded.</summary>
     private readonly int _maxPages;
 
@@ -238,20 +245,23 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
             return;
         }
 
-        // Delete all page files
-        foreach (var filePath in _pageFiles!.Values)
+        lock (_pageLock)
         {
-            if (File.Exists(filePath))
-                File.Delete(filePath);
-        }
+            // Delete all page files
+            foreach (var filePath in _pageFiles!.Values)
+            {
+                if (File.Exists(filePath))
+                    File.Delete(filePath);
+            }
 
-        _loadedPages!.Clear();
-        _lru!.Clear();
-        _lruNodes!.Clear();
-        _idToPage!.Clear();
-        _pageFiles.Clear();
-        _nextPageId = 0;
-        _currentWritePageId = AllocatePage();
+            _loadedPages!.Clear();
+            _lru!.Clear();
+            _lruNodes!.Clear();
+            _idToPage!.Clear();
+            _pageFiles.Clear();
+            _nextPageId = 0;
+            _currentWritePageId = AllocatePage();
+        }
     }
 
     /// <summary>
@@ -285,10 +295,13 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     public void FlushDirty()
     {
         if (!IsLazy) return;
-        foreach (var (pageId, page) in _loadedPages!)
+        lock (_pageLock)
         {
-            if (page.IsDirty)
-                WritePage(pageId, page);
+            foreach (var (pageId, page) in _loadedPages!)
+            {
+                if (page.IsDirty)
+                    WritePage(pageId, page);
+            }
         }
     }
 
@@ -303,21 +316,23 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
     public void CompactMemory()
     {
         if (!IsLazy) return;
-
-        // 1. Write back all dirty pages
-        foreach (var (pageId, page) in _loadedPages!)
+        lock (_pageLock)
         {
-            if (page.IsDirty)
-                WritePage(pageId, page);
+            // 1. Write back all dirty pages
+            foreach (var (pageId, page) in _loadedPages!)
+            {
+                if (page.IsDirty)
+                    WritePage(pageId, page);
+            }
+
+            // 2. Evict all loaded pages from memory; directory indices (_idToPage, _pageFiles) are preserved
+            _loadedPages.Clear();
+            _lru!.Clear();
+            _lruNodes!.Clear();
+
+            // 3. Allocate a fresh write page so subsequent writes can proceed immediately
+            _currentWritePageId = AllocatePage();
         }
-
-        // 2. Evict all loaded pages from memory; directory indices (_idToPage, _pageFiles) are preserved
-        _loadedPages.Clear();
-        _lru!.Clear();
-        _lruNodes!.Clear();
-
-        // 3. Allocate a fresh write page so subsequent writes can proceed immediately
-        _currentWritePageId = AllocatePage();
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -337,27 +352,36 @@ internal sealed class EntityPageCache<TEntity> : IDisposable
 
     /// <summary>
     /// Gets or loads the specified page from disk, updating its LRU position.
+    /// <para>
+    /// Acquiring <see cref="_pageLock"/> here is necessary: <see cref="TryGetValue"/> and
+    /// <see cref="Values"/> are called under <see cref="System.Threading.ReaderWriterLockSlim"/>
+    /// read locks (shared), so multiple threads can enter this method concurrently and
+    /// simultaneously mutate <c>_loadedPages</c>, <c>_lru</c>, and <c>_lruNodes</c>.
+    /// </para>
     /// </summary>
     private Page GetOrLoadPage(int pageId)
     {
-        // Memory cache hit
-        if (_loadedPages!.TryGetValue(pageId, out var page))
+        lock (_pageLock)
         {
-            TouchLru(pageId);
+            // Memory cache hit
+            if (_loadedPages!.TryGetValue(pageId, out var page))
+            {
+                TouchLru(pageId);
+                return page;
+            }
+
+            // Cache full — evict the coldest page first
+            if (_loadedPages.Count >= _maxPages)
+                EvictColdest();
+
+            // Load from disk
+            page = _pageFiles!.TryGetValue(pageId, out var filePath) && File.Exists(filePath)
+                ? ReadPage(filePath)
+                : new Page();
+
+            AddToLru(pageId, page);
             return page;
         }
-
-        // Cache full — evict the coldest page first
-        if (_loadedPages.Count >= _maxPages)
-            EvictColdest();
-
-        // Load from disk
-        page = _pageFiles!.TryGetValue(pageId, out var filePath) && File.Exists(filePath)
-            ? ReadPage(filePath)
-            : new Page();
-
-        AddToLru(pageId, page);
-        return page;
     }
 
     /// <summary>

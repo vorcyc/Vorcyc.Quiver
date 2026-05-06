@@ -1,6 +1,6 @@
-﻿# Vorcyc Quiver 3.2.0 Technical Documentation
+﻿# Vorcyc Quiver 3.2.1 Technical Documentation
 
-![Vorcyc Quiver 3.2.0](logo.jpg "Vorcyc Quiver 3.2.0")
+![Vorcyc Quiver 3.2.1](logo.jpg "Vorcyc Quiver 3.2.1")
 
 > **Product Positioning**: A pure .NET embedded vector database — zero native dependencies, runs in-process, no standalone database server deployment required  
 > **Framework Version**: .NET 10  
@@ -22,6 +22,18 @@ While reflecting on these pain points, EF Core's design philosophy provided key 
 Meanwhile, the Python library Annoy (Approximate Nearest Neighbors Oh Yeah) also provided inspiration, but its .NET wrapper HNSWSharp did not support a structured database-like design and only offered a single HNSW index type, lacking flexibility and diversity.
 
 Therefore, I decided to design a brand-new vector database framework that would maintain EF Core-style ease of use and declarative modeling, support multiple ANN index algorithms to accommodate scenarios with different scales and performance requirements, and also include built-in concurrency safety mechanisms and efficient persistence solutions.
+
+---
+
+### What's New in 3.2.1
+
+> **File Format Compatibility**: v3.2.1 is fully backward-compatible with all previous data files (v1.x, v2.x, v3.0.0, v3.1.0, v3.2.0).
+
+#### Bug Fixes
+
+| Fix | Description |
+|-----|-------------|
+| **`EntityPageCache` thread-safety** | Fixed a data race in `LazyPaging` mode where concurrent readers (e.g., `Parallel.ForEach` calling `Find` / `Search` simultaneously) could corrupt the internal LRU state (`_loadedPages`, `_lru`, `_lruNodes`). All paths that mutate LRU state (`GetOrLoadPage`, `FlushDirty`, `CompactMemory`, `Clear`) are now protected by an internal `Lock (_pageLock)`. `FullMemory` mode is unaffected (zero overhead). |
 
 ---
 

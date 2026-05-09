@@ -177,8 +177,11 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
             return;
         }
 
-        // Read the vector from the store for graph construction (ReadOnlySpan is safe in a synchronous context)
-        var vector = _vectorStore.Get(id);
+        // Read the vector from the store for graph construction.
+        // 复制为独立数组：对 Float16 / SQ8 等"边界解码"型 store，Get 返回的是线程局部 widen/decode 缓冲，
+        // 其有效期只到本线程下一次 Get；而下面的 SearchLayer 会反复 Get(neighbor) 覆盖该缓冲，
+        // 因此必须先固化当前向量（Float32 heap store 的 ToArray 仅一次小拷贝，开销可忽略）。
+        var vector = _vectorStore.Get(id).ToArray();
 
         var ep = _entryPointId;
 
@@ -234,7 +237,169 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// Prunes a node's neighbor connections at the specified layer. Retains the top <paramref name="maxConnections"/> neighbors by similarity
+    /// 批量构建：把一批 id 高效地插入图中，并行化最昂贵的"邻居搜索"阶段。适用于把字段从 Flat
+    /// 切换到 HNSW 后的首次全量重建。
+    /// <para>
+    /// <b>并发模型（分波次：并行只读搜索 + 串行提交）</b>：
+    /// <list type="number">
+    ///   <item>串行预生成每个新节点的随机层级（<see cref="RandomLevel"/> 使用的 <see cref="Random"/> 非线程安全）。</item>
+    ///   <item>按波次处理。每个波次内，所有新节点针对"已提交、当前不可变的图"并行执行 <see cref="SearchLayer"/>
+    ///         （纯只读，零数据竞争），各自得出每层应连接的邻居候选。</item>
+    ///   <item>串行提交本波次：创建节点、建立双向连接并按需剪枝，然后更新入口点 / 最高层。</item>
+    /// </list>
+    /// 同一波次内的节点彼此不互联（搜索时它们尚未提交），波次大小被刻意控制得较小以将这种近似损失降到最低；
+    /// HNSW 本身是近似算法，召回基本不受影响。
+    /// </para>
+    /// </summary>
+    /// <param name="ids">待插入的内部 ID 列表，其向量已写入 <see cref="IVectorStore"/>。</param>
+    /// <param name="degreeOfParallelism">最大并行度；<see langword="null"/> 取 <see cref="Environment.ProcessorCount"/>，小于等于 1 时退化为串行。</param>
+    public void BuildBulk(IReadOnlyList<int> ids, int? degreeOfParallelism = null)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        if (ids.Count == 0) return;
+
+        int dop = degreeOfParallelism ?? Environment.ProcessorCount;
+
+        // 小数据量或不并行时直接走串行 Add，行为与逐条插入完全一致。
+        if (dop <= 1 || ids.Count < 2)
+        {
+            for (int i = 0; i < ids.Count; i++) Add(ids[i]);
+            return;
+        }
+
+        // 阶段 1：串行预生成层级（Random 非线程安全）。
+        var entries = new (int Id, int Level)[ids.Count];
+        for (int i = 0; i < ids.Count; i++)
+            entries[i] = (ids[i], RandomLevel());
+
+        int start = 0;
+
+        // 空图时先串行播种第一个节点作为入口点。
+        if (_entryPointId == -1)
+        {
+            var (fid, flevel) = entries[0];
+            _nodes[fid] = new HnswNode(fid, flevel);
+            _entryPointId = fid;
+            _maxLevel = flevel;
+            start = 1;
+        }
+
+        // 波次大小：兼顾并行度与"同波次节点不互联"带来的近似损失。
+        // 取较大的波次以摊薄波次间同步屏障与 Parallel 调度开销（对高核数尤为重要），
+        // 相对百万级数据，每波数千节点的近似损失对召回可忽略。
+        int chunkSize = Math.Max(dop * 32, 256);
+        var parallelOptions = new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = dop };
+
+        for (int batchStart = start; batchStart < entries.Length; batchStart += chunkSize)
+        {
+            int batchEnd = Math.Min(batchStart + chunkSize, entries.Length);
+            int batchCount = batchEnd - batchStart;
+
+            // 冻结本波次的入口点与最高层；并行搜索阶段图保持不变。
+            int epFrozen = _entryPointId;
+            int maxLevelFrozen = _maxLevel;
+
+            // 每个元素保存：该节点各层选中的邻居 id 列表（索引 = 层号）。
+            var selectedByLevel = new List<int>[batchCount][];
+
+            // 阶段 2：并行邻居搜索（只读，针对冻结图）。
+            System.Threading.Tasks.Parallel.For(0, batchCount, parallelOptions, k =>
+            {
+                var (id, level) = entries[batchStart + k];
+
+                // ReadOnlySpan 是 ref struct，不能跨方法/闭包持有；物化为 float[]。
+                var vector = _vectorStore.Get(id).ToArray();
+
+                var ep = epFrozen;
+
+                // 上层贪心导航（ef=1），快速定位区域。
+                for (int l = maxLevelFrozen; l > level; l--)
+                {
+                    var nearest = SearchLayer(vector, ep, 1, l);
+                    if (nearest.Count > 0)
+                        ep = nearest.MaxBy(x => x.Similarity).Id;
+                }
+
+                var perLevel = new List<int>[level + 1];
+                for (int l = Math.Min(level, maxLevelFrozen); l >= 0; l--)
+                {
+                    int mMax = l == 0 ? _mMax0 : _m;
+                    var candidates = SearchLayer(vector, ep, _efConstruction, l);
+                    var selected = candidates
+                        .OrderByDescending(x => x.Similarity)
+                        .Take(mMax)
+                        .ToList();
+
+                    perLevel[l] = [.. selected.Select(x => x.Id)];
+
+                    if (selected.Count > 0)
+                        ep = selected[0].Id;
+                }
+
+                selectedByLevel[k] = perLevel;
+            });
+
+            // 阶段 3：串行提交本波次——只做廉价的加边，把昂贵的剪枝推迟到并行阶段。
+            // 串行段内联剪枝会让搜索结束后所有线程空等单核做 PruneConnections（相似度计算+排序），
+            // 是多核利用率上不去的主因。这里改为：先无剪枝地建立双向连接，记录可能超限的邻居，
+            // 随后在阶段 4 并行修剪这些节点。
+            var overflowNodes = new HashSet<int>();
+            for (int k = 0; k < batchCount; k++)
+            {
+                var (id, level) = entries[batchStart + k];
+                var node = new HnswNode(id, level);
+                _nodes[id] = node;
+
+                var perLevel = selectedByLevel[k];
+                for (int l = Math.Min(level, maxLevelFrozen); l >= 0; l--)
+                {
+                    int mMax = l == 0 ? _mMax0 : _m;
+                    var neighborIds = perLevel[l];
+                    if (neighborIds is null) continue;
+
+                    foreach (var neighborId in neighborIds)
+                    {
+                        // 双向连接：新节点 → 邻居（新节点本层至多 mMax 个，永不超限，无需修剪）
+                        node.Neighbors[l].Add(neighborId);
+
+                        if (!_nodes.TryGetValue(neighborId, out var neighborNode)) continue;
+
+                        // 双向连接：邻居 → 新节点（仅 List.Add，廉价）
+                        neighborNode.Neighbors[l].Add(id);
+
+                        // 超过上限的邻居推迟修剪
+                        if (neighborNode.Neighbors[l].Count > mMax)
+                            overflowNodes.Add(neighborId);
+                    }
+                }
+
+                // 新节点层级超过当前最高层时更新全局入口点
+                if (level > _maxLevel)
+                {
+                    _entryPointId = id;
+                    _maxLevel = level;
+                }
+            }
+
+            // 阶段 4：并行修剪本波次被追加反向边而超限的节点。
+            // 每个任务只读取向量、只改写自身节点的邻居表（节点 id 互不相同），与阶段 2 一样零数据竞争。
+            // overflowNodes 全部来自本波次之前已提交的节点（搜索基于冻结图，邻居只引用旧节点），
+            // 因此并行修剪期间没有任何对 _nodes 的写入。
+            if (overflowNodes.Count > 0)
+            {
+                System.Threading.Tasks.Parallel.ForEach(overflowNodes, parallelOptions, nid =>
+                {
+                    if (!_nodes.TryGetValue(nid, out var nn)) return;
+                    for (int l = 0; l < nn.Neighbors.Length; l++)
+                    {
+                        int cap = l == 0 ? _mMax0 : _m;
+                        if (nn.Neighbors[l].Count > cap)
+                            PruneConnections(nn, l, cap);
+                    }
+                });
+            }
+        }
+    }
     /// and removes references to already-deleted (invalid) nodes.
     /// </summary>
     /// <param name="node">The node whose connections are to be pruned.</param>
@@ -255,6 +420,53 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     #endregion
 
     #region Delete
+
+    /// <summary>
+    /// 与底层 <see cref="IVectorStore"/> 对账：移除所有"节点存在于图中、但对应向量已不在 store"的悬空节点。
+    /// <para>
+    /// 主要用于从快照恢复后修复非正常退出造成的不一致：磁盘上的 <c>IndexSnapshot</c> 段可能引用了某些 id，
+    /// 但这些 id 的向量并未真正落盘 / 绑定到 store（实体被 tombstone、向量为 null、或写盘中途崩溃）。
+    /// 若不清理，后续 <see cref="Add"/> / <see cref="Search"/> 在 <see cref="SearchLayer"/> 沿邻居遍历到这些
+    /// 节点并执行 <c>_vectorStore.Get(id)</c> 时会抛 <see cref="KeyNotFoundException"/>
+    /// （例如 "Vector id N not found in mmap store."）。
+    /// </para>
+    /// <para>
+    /// 删除节点本身后，残留在其它节点邻居表里的反向引用会被 <see cref="SearchLayer"/> 现有的
+    /// <c>_nodes.ContainsKey</c> 守卫与 <see cref="PruneConnections"/> 的有效性过滤自动跳过 / 清理，
+    /// 因此无需逐边清扫。若入口点被移除，则重新选举最高层节点作为入口点。
+    /// </para>
+    /// </summary>
+    public void ReconcileWithStore()
+    {
+        if (_nodes.Count == 0) return;
+
+        // 收集所有向量已缺失的节点 id（先收集再删除，避免遍历时修改字典）。
+        List<int>? dangling = null;
+        foreach (var id in _nodes.Keys)
+        {
+            if (!_vectorStore.Contains(id))
+                (dangling ??= []).Add(id);
+        }
+
+        if (dangling is null) return;
+
+        foreach (var id in dangling)
+            _nodes.Remove(id);
+
+        // 修正入口点 / 最高层：图可能已空，或入口点恰被移除。
+        if (_nodes.Count == 0)
+        {
+            _entryPointId = -1;
+            _maxLevel = -1;
+            return;
+        }
+        if (!_nodes.ContainsKey(_entryPointId))
+        {
+            var best = _nodes.Values.MaxBy(n => n.MaxLevel)!;
+            _entryPointId = best.Id;
+            _maxLevel = best.MaxLevel;
+        }
+    }
 
     /// <summary>
     /// Removes a node from the graph using a lazy strategy: only the node itself is deleted;
@@ -456,4 +668,146 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     {
         return (int)(-Math.Log(1.0 - _rng.NextDouble()) * _levelMultiplier);
     }
+
+    #region Snapshot (persistence)
+
+    // 快照二进制格式（小端）：
+    //   magic        : 4B "QHNS"
+    //   version      : u16 = 1
+    //   simName      : string (BinaryWriter.Write)   — TSim 的类型名，用于指纹校验
+    //   m            : i32
+    //   mMax0        : i32
+    //   efConstruct  : i32
+    //   efSearch     : i32
+    //   effectiveDim : i32                            — 与 VectorStore.EffectiveDim 匹配
+    //   entryPointId : i32
+    //   maxLevel     : i32
+    //   nodeCount    : i32
+    //   coveredNext  : i32                            — 快照覆盖的 id 上界（不含）
+    //   nodes        : repeat nodeCount
+    //       id           : i32
+    //       nodeMaxLevel : i32
+    //       layers       : repeat (nodeMaxLevel+1)
+    //           neighborCount : i32
+    //           neighborIds   : i32[neighborCount]
+    private const uint SnapshotMagic = 0x534E_4851u; // 'Q','H','N','S' little-endian
+    private const ushort SnapshotVersion = 1;
+
+    /// <inheritdoc />
+    public bool TrySaveSnapshot(System.IO.BinaryWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.Write(SnapshotMagic);
+        writer.Write(SnapshotVersion);
+        writer.Write(typeof(TSim).FullName ?? typeof(TSim).Name);
+        writer.Write(_m);
+        writer.Write(_mMax0);
+        writer.Write(_efConstruction);
+        writer.Write(_efSearch);
+        writer.Write(_vectorStore.EffectiveDim);
+        writer.Write(_entryPointId);
+        writer.Write(_maxLevel);
+        writer.Write(_nodes.Count);
+
+        int coveredNext = 0;
+        foreach (var id in _nodes.Keys)
+        {
+            if (id >= coveredNext) coveredNext = id + 1;
+        }
+        writer.Write(coveredNext);
+
+        foreach (var kv in _nodes)
+        {
+            var node = kv.Value;
+            writer.Write(node.Id);
+            writer.Write(node.MaxLevel);
+            for (int layer = 0; layer <= node.MaxLevel; layer++)
+            {
+                var nbrs = node.Neighbors[layer];
+                writer.Write(nbrs.Count);
+                for (int i = 0; i < nbrs.Count; i++)
+                    writer.Write(nbrs[i]);
+            }
+        }
+
+        return true;
+    }
+
+    /// <inheritdoc />
+    public bool TryLoadSnapshot(System.IO.BinaryReader reader, out int snapshotCoveredNextId)
+    {
+        snapshotCoveredNextId = 0;
+        ArgumentNullException.ThrowIfNull(reader);
+
+        try
+        {
+            var magic = reader.ReadUInt32();
+            if (magic != SnapshotMagic) return false;
+            var version = reader.ReadUInt16();
+            if (version != SnapshotVersion) return false;
+
+            var simName = reader.ReadString();
+            var expectedSim = typeof(TSim).FullName ?? typeof(TSim).Name;
+            if (!string.Equals(simName, expectedSim, StringComparison.Ordinal)) return false;
+
+            int m = reader.ReadInt32();
+            int mMax0 = reader.ReadInt32();
+            int efC = reader.ReadInt32();
+            int efS = reader.ReadInt32();
+            int dim = reader.ReadInt32();
+
+            // 仅当与当前实例的关键参数一致时才接受快照。efSearch 是运行时可调参数，因此不强制一致。
+            if (m != _m || mMax0 != _mMax0 || efC != _efConstruction) return false;
+            if (dim != _vectorStore.EffectiveDim) return false;
+            _ = efS; // 接受但不覆盖；保留构造时设定的 _efSearch。
+
+            int entryPoint = reader.ReadInt32();
+            int maxLevel = reader.ReadInt32();
+            int nodeCount = reader.ReadInt32();
+            int coveredNext = reader.ReadInt32();
+
+            if (nodeCount < 0 || coveredNext < 0) return false;
+
+            // 先准备一个临时字典，全部读取成功后再原子接管。
+            var tmpNodes = new Dictionary<int, HnswNode>(nodeCount);
+            for (int n = 0; n < nodeCount; n++)
+            {
+                int id = reader.ReadInt32();
+                int nodeMax = reader.ReadInt32();
+                if (nodeMax < 0) return false;
+                var node = new HnswNode(id, nodeMax);
+                for (int layer = 0; layer <= nodeMax; layer++)
+                {
+                    int nbrCount = reader.ReadInt32();
+                    if (nbrCount < 0) return false;
+                    var list = node.Neighbors[layer];
+                    if (nbrCount > 0)
+                    {
+                        if (list.Capacity < nbrCount) list.Capacity = nbrCount;
+                        for (int i = 0; i < nbrCount; i++)
+                            list.Add(reader.ReadInt32());
+                    }
+                }
+                tmpNodes[id] = node;
+            }
+
+            _nodes.Clear();
+            foreach (var kv in tmpNodes) _nodes[kv.Key] = kv.Value;
+            _entryPointId = entryPoint;
+            _maxLevel = maxLevel;
+            snapshotCoveredNextId = coveredNext;
+            return true;
+        }
+        catch (EndOfStreamException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    #endregion
 }

@@ -3,17 +3,17 @@ using System.Numerics;
 namespace Vorcyc.Quiver.Similarity;
 
 /// <summary>
-/// 曼哈顿距离（L1 范数）转相似度：<c>similarity = 1 / (1 + Σ|xᵢ - yᵢ|)</c>。值域 (0, 1]。
+/// Manhattan distance (L1 norm) converted to similarity: <c>similarity = 1 / (1 + Σ|xᵢ - yᵢ|)</c>. Range (0, 1].
 /// <para>
-/// 也称"城市街区距离"，计算沿各坐标轴的绝对差之和。
-/// 相比欧几里得距离对离群维度不那么敏感（不平方放大差异）。
+/// Also known as "city-block distance": computes the sum of absolute differences along each coordinate axis.
+/// Less sensitive to outlier dimensions than Euclidean distance because differences are not squared.
 /// </para>
 /// <para>
-/// <b>适用场景</b>：
+/// <b>Recommended use cases</b>:
 /// <list type="bullet">
-///   <item>稀疏特征向量（大多数维度为 0，少数维度有值）</item>
-///   <item>高维空间中需要对异常维度更鲁棒的度量</item>
-///   <item>推荐系统中的用户偏好向量比较</item>
+///   <item>Sparse feature vectors where most dimensions are zero and only a few have non-zero values.</item>
+///   <item>High-dimensional spaces requiring a metric that is more robust to anomalous dimensions.</item>
+///   <item>User preference vector comparison in recommendation systems.</item>
 /// </list>
 /// </para>
 /// </summary>

@@ -1,29 +1,30 @@
 using System.Numerics;
-using System.Numerics.Tensors;
+using Vorcyc.Quiver.Numerics;
 
 namespace Vorcyc.Quiver.Similarity;
 
 /// <summary>
-/// 皮尔逊相关系数：<c>r = Σ((xᵢ-μx)(yᵢ-μy)) / (√Σ(xᵢ-μx)² × √Σ(yᵢ-μy)²)</c>。值域 [-1, 1]。
+/// Pearson correlation coefficient: <c>r = Σ((xᵢ-μx)(yᵢ-μy)) / (√Σ(xᵢ-μx)² × √Σ(yᵢ-μy)²)</c>. Range [-1, 1].
 /// <para>
-/// 本质上是<b>去均值后的余弦相似度</b>——先将两个向量各自中心化（减去均值），
-/// 再计算余弦相似度。这使得度量不受向量整体偏移的影响，仅衡量维度间的线性共变趋势。
+/// Essentially <b>cosine similarity after mean-centering</b>: both vectors are centered (mean subtracted)
+/// and then cosine similarity is computed. This makes the metric invariant to overall shifts in the
+/// vector values, measuring only the linear co-variation trend across dimensions.
 /// </para>
 /// <para>
-/// <b>与余弦相似度的区别</b>：
+/// <b>Difference from cosine similarity</b>:
 /// <list type="bullet">
-///   <item>Cosine 衡量向量方向的一致性（原点出发）</item>
-///   <item>Pearson 衡量维度间变化模式的线性相关性（去均值后的方向）</item>
-///   <item>当向量的各维度均值差异较大时（如不同文档长度的 TF-IDF），Pearson 更稳健</item>
+///   <item>Cosine measures directional alignment of vectors relative to the origin.</item>
+///   <item>Pearson measures linear correlation of the variation pattern across dimensions (direction after mean-centering).</item>
+///   <item>When the per-dimension means differ significantly (e.g. TF-IDF vectors of documents with different lengths), Pearson is more robust.</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>适用场景</b>：
+/// <b>Recommended use cases</b>:
 /// <list type="bullet">
-///   <item>文本嵌入比较（去除文档长度 / embedding 偏置的影响）</item>
-///   <item>TF-IDF 或 BoW 特征的文档相似度</item>
-///   <item>推荐系统中用户评分向量的相关性分析</item>
-///   <item>基因表达谱、时间序列模式匹配</item>
+///   <item>Text embedding comparison (removes document-length / embedding-bias effects).</item>
+///   <item>Document similarity with TF-IDF or BoW features.</item>
+///   <item>Correlation analysis of user rating vectors in recommendation systems.</item>
+///   <item>Gene expression profiling and time-series pattern matching.</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -35,9 +36,9 @@ public readonly struct PearsonCorrelationSimilarity : ISimilarity<float>
         var n = x.Length;
         if (n == 0) return 0f;
 
-        // Pass 1: 均值（TensorPrimitives 内部 SIMD 加速求和）
-        var meanX = TensorPrimitives.Sum(x) / n;
-        var meanY = TensorPrimitives.Sum(y) / n;
+        // Pass 1: 均值（内部 Vector<T> 路径加速求和）
+        var meanX = VectorMath.Sum(x) / n;
+        var meanY = VectorMath.Sum(y) / n;
 
         // Pass 2: 去均值后的点积和 L2 范数²（数据仍在 L1 缓存中）
         int i = 0;

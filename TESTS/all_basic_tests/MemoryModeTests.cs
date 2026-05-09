@@ -4,41 +4,36 @@ using static AllBasicTests.TestHelper;
 namespace AllBasicTests;
 
 /// <summary>
-/// StorageMode 功能测试：验证默认 Heap 存储模式在 CRUD、搜索、持久化往返、多向量、WAL 等场景下的正确性。
+/// StorageMode 功能测试：验证默认 Heap 存储模式在 CRUD、搜索、持久化往返、多向量等场景下的正确性。
 /// </summary>
 public static class MemoryModeTests
 {
     public static async Task RunAsync()
     {
-        await Test_Validate_LazyPaging_RequiresDatabasePath();
+        await Test_Validate_DefaultMemoryModes_AllowMemoryOnly();
         await Test_BasicCrudAndSearch();
         await Test_PersistenceRoundTrip();
         await Test_MultiVector();
         await Test_SlotReuse();
         await Test_CapacityGrowth();
-        await Test_WalRoundTrip();
         await Test_FullMemory_SearchConsistency();
     }
 
-    /// <summary>测试 21：LazyPaging 模式无 DatabasePath 时 Validate 抛出异常。</summary>
-    private static Task Test_Validate_LazyPaging_RequiresDatabasePath()
+    /// <summary>测试 21：默认内存模式允许无 DatabasePath。</summary>
+    private static Task Test_Validate_DefaultMemoryModes_AllowMemoryOnly()
     {
-        Console.WriteLine("\n═══ 21. LazyPaging 模式 Validate 校验 ═══");
+        Console.WriteLine("\n═══ 21. 默认内存模式 Validate 校验 ═══");
 
-        var threw = false;
+        var noThrowLazyNamedContext = false;
         try
         {
-            // LazyPaging 未设置 DatabasePath 应抛出异常
             _ = new MyLazyLoadDb(null!);
+            noThrowLazyNamedContext = true;
         }
-        catch (Exception)
-        {
-            threw = true;
-        }
+        catch { }
 
-        Assert(threw, "LazyPaging 无 DatabasePath 时构造抛出异常");
+        Assert(noThrowLazyNamedContext, "默认 LargeFieldMemoryMode.InMemory 无 DatabasePath 时构造不抛异常");
 
-        // FullMemory 模式无 DatabasePath 不抛异常
         var noThrow = false;
         try
         {
@@ -47,7 +42,7 @@ public static class MemoryModeTests
         }
         catch { }
 
-        Assert(noThrow, "FullMemory 无 DatabasePath 时构造不抛异常");
+        Assert(noThrow, "默认 VectorMemoryMode.InMemory 无 DatabasePath 时构造不抛异常");
 
         return Task.CompletedTask;
     }
@@ -300,64 +295,7 @@ public static class MemoryModeTests
         return Task.CompletedTask;
     }
 
-    /// <summary>测试 27（原 28）：WAL 增量持久化往返。</summary>
-    private static async Task Test_WalRoundTrip()
-    {
-        Console.WriteLine("\n═══ 27. WAL 增量持久化 ═══");
-
-        var path = "test_wal2.vdb";
-        if (File.Exists(path)) File.Delete(path);
-        if (File.Exists(path + ".wal")) File.Delete(path + ".wal");
-
-        var random = new Random(42);
-
-        var db = new MyMmapWalDb(path);
-        for (int i = 0; i < 100; i++)
-        {
-            db.Faces.Add(new FaceFeature
-            {
-                PersonId = $"W{i:D3}",
-                Name = $"WAL_{i}",
-                Embedding = RandomVector(random, 128)
-            });
-        }
-        await db.SaveChangesAsync();
-        Assert(File.Exists(path + ".wal"), "WAL 文件已创建");
-
-        for (int i = 90; i < 100; i++)
-            db.Faces.RemoveByKey($"W{i:D3}");
-
-        for (int i = 0; i < 5; i++)
-        {
-            db.Faces.Upsert(new FaceFeature
-            {
-                PersonId = $"W{i:D3}",
-                Name = $"WAL_已更新_{i}",
-                Embedding = RandomVector(random, 128)
-            });
-        }
-        await db.SaveChangesAsync();
-
-        Assert(db.Faces.Count == 90, "WAL 操作后内存数量 90");
-        db.Dispose();
-
-        var dbReplay = new MyMmapWalDb(path);
-        await dbReplay.LoadAsync();
-
-        Assert(dbReplay.Faces.Count == 90, $"WAL 回放后数量正确：{dbReplay.Faces.Count}/90");
-        Assert(dbReplay.Faces.Find("W000")?.Name == "WAL_已更新_0", "WAL Upsert 数据回放正确");
-        Assert(dbReplay.Faces.Find("W095") == null, "WAL 已删除数据回放正确");
-
-        var query = RandomVector(new Random(777), 128);
-        var results = dbReplay.Faces.Search(e => e.Embedding, query, 5);
-        Assert(results.Count == 5, "WAL 回放后搜索 Top-5 正常");
-
-        dbReplay.Dispose();
-        if (File.Exists(path)) File.Delete(path);
-        if (File.Exists(path + ".wal")) File.Delete(path + ".wal");
-    }
-
-    /// <summary>测试 28（原 29）：两个独立上下文搜索结果一致性。</summary>
+    /// <summary>测试 27（原 28）：两个独立上下文搜索结果一致性。</summary>
     private static Task Test_FullMemory_SearchConsistency()
     {
         Console.WriteLine("\n═══ 28. 两个上下文搜索一致性 ═══");

@@ -38,8 +38,10 @@ public class MultiVectorEntity
 }
 
 /// <summary>
-/// 富类型实体：覆盖 BinaryStorageProvider 新增的 7 种 TypeCode。
-/// 包含 byte、short、Half、DateTimeOffset、TimeSpan、byte[]、double[] 属性，
+/// 富类型实体：覆盖 BinaryStorageProvider 支持的扩展 TypeCode。
+/// 包含 byte、short、Half、DateTimeOffset、TimeSpan、byte[]、double[]，
+/// 以及 ushort、uint、ulong、sbyte、char、DateOnly、TimeOnly 标量，
+/// 和 ushort[]、uint[]、ulong[]、sbyte[]、DateOnly[]、TimeOnly[]、short[]、int[]、long[]、bool[]、Half[] 数组形式，
 /// 用于验证二进制序列化往返的完整性和精度。
 /// </summary>
 public class RichTypeEntity
@@ -55,8 +57,48 @@ public class RichTypeEntity
     public byte[] Blob { get; set; } = [];
     public double[] Weights { get; set; } = [];
 
+    // 新增标量类型
+    public ushort UShortVal { get; set; }
+    public uint UIntVal { get; set; }
+    public ulong ULongVal { get; set; }
+    public sbyte SByteVal { get; set; }
+    public char CharVal { get; set; }
+    public DateOnly DateVal { get; set; }
+    public TimeOnly TimeVal { get; set; }
+
+    // 新增数组类型
+    public ushort[] UShortArr { get; set; } = [];
+    public uint[] UIntArr { get; set; } = [];
+    public ulong[] ULongArr { get; set; } = [];
+    public sbyte[] SByteArr { get; set; } = [];
+    public DateOnly[] DateArr { get; set; } = [];
+    public TimeOnly[] TimeArr { get; set; } = [];
+    public short[] ShortArr { get; set; } = [];
+    public int[] IntArr { get; set; } = [];
+    public long[] LongArr { get; set; } = [];
+    public bool[] BoolArr { get; set; } = [];
+    public Half[] HalfArr { get; set; } = [];
+
     [QuiverVector(128)]
     public float[] Embedding { get; set; } = [];
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Half[] 向量实体
+// ══════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Half 精度向量实体（fp16 物理存储）。
+/// 用于验证 Half[] 向量的增删查改、float/Half 双重查询重载、以及 Float16 持久化往返。
+/// </summary>
+public class HalfVectorEntity
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+
+    [QuiverVector(16, DistanceMetric.Cosine)]
+    public Half[] Vec { get; set; } = [];
 }
 
 // ══════════════════════════════════════════════════════════════════

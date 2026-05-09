@@ -361,3 +361,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/TESTS/BuildAudioDb/BuildAudioDb.csproj
+/tests/MemoryPressure_test/MemoryPressure_test.csproj
+/tests/Migrate_Load_test/Migrate_Load_test.csproj

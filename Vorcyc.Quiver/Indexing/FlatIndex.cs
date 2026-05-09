@@ -30,6 +30,13 @@ internal sealed class FlatIndex<TSim> : IVectorIndex
     private readonly HashSet<int> _ids = [];
 
     /// <summary>
+    /// Cached snapshot of <see cref="_ids"/> as an array. Built lazily on first search after a mutation,
+    /// then reused across every subsequent search until the next Add/Remove/Clear. This avoids the
+    /// repeated multi-MB LOH allocation that <c>_ids.ToArray()</c> would otherwise incur per query.
+    /// </summary>
+    private int[]? _idsSnapshot;
+
+    /// <summary>
     /// Parallel search threshold. When the count exceeds this value, <see cref="Parallel.ForEach"/> multi-threaded search is used.
     /// Below this value, sequential traversal is faster (avoids thread-scheduling and <see cref="System.Collections.Concurrent.ConcurrentBag{T}"/> synchronization overhead).
     /// </summary>
@@ -44,13 +51,37 @@ internal sealed class FlatIndex<TSim> : IVectorIndex
     public int Count => _ids.Count;
 
     /// <inheritdoc />
-    public void Add(int id) => _ids.Add(id);
+    public void Add(int id)
+    {
+        if (_ids.Add(id)) _idsSnapshot = null;
+    }
 
     /// <inheritdoc />
-    public void Remove(int id) => _ids.Remove(id);
+    public void Remove(int id)
+    {
+        if (_ids.Remove(id)) _idsSnapshot = null;
+    }
 
     /// <inheritdoc />
-    public void Clear() => _ids.Clear();
+    public void Clear()
+    {
+        _ids.Clear();
+        _idsSnapshot = null;
+    }
+
+    /// <summary>Returns the cached id snapshot, rebuilding it if a mutation invalidated it.</summary>
+    private int[] GetIdsSnapshot()
+    {
+        var snap = _idsSnapshot;
+        if (snap is null || snap.Length != _ids.Count)
+        {
+            snap = new int[_ids.Count];
+            int i = 0;
+            foreach (var id in _ids) snap[i++] = id;
+            _idsSnapshot = snap;
+        }
+        return snap;
+    }
 
     /// <summary>
     /// Searches for the Top-K results most similar to the query vector.
@@ -79,8 +110,10 @@ internal sealed class FlatIndex<TSim> : IVectorIndex
     public List<(int Id, float Similarity)> SearchByThreshold(float[] query, float threshold)
     {
         var results = new List<(int Id, float Similarity)>();
-        foreach (var id in _ids)
+        var ids = GetIdsSnapshot();
+        for (int i = 0; i < ids.Length; i++)
         {
+            var id = ids[i];
             var sim = TSim.Compute(query, _vectorStore.Get(id));
             if (sim >= threshold)
                 results.Add((id, sim));
@@ -89,37 +122,155 @@ internal sealed class FlatIndex<TSim> : IVectorIndex
     }
 
     /// <summary>
-    /// Sequential search: single-threaded traversal over all vectors to compute similarity, then LINQ sort to take Top-K.
-    /// Suitable when the vector count is ≤ <see cref="ParallelThreshold"/>, avoiding multi-thread scheduling overhead.
+    /// Sequential search: single-threaded traversal using a bounded min-heap of size <paramref name="topK"/>.
+    /// Allocates only O(topK) memory regardless of dataset size — no intermediate list of all candidates,
+    /// no full sort. Suitable when the vector count is ≤ <see cref="ParallelThreshold"/>.
     /// </summary>
     private List<(int Id, float Similarity)> SequentialSearchCore(float[] query, int topK)
     {
-        var results = new List<(int Id, float Sim)>(_ids.Count);
-        foreach (var id in _ids)
-            results.Add((id, TSim.Compute(query, _vectorStore.Get(id))));
-
-        return results.OrderByDescending(r => r.Sim).Take(topK).ToList();
+        var heap = new TopKHeap(topK);
+        var ids = GetIdsSnapshot();
+        for (int i = 0; i < ids.Length; i++)
+        {
+            var id = ids[i];
+            heap.Push(id, TSim.Compute(query, _vectorStore.Get(id)));
+        }
+        return heap.DrainDescending();
     }
 
     /// <summary>
-    /// Parallel search: uses <see cref="Parallel.ForEach"/> to distribute similarity computation across multiple thread-pool threads.
-    /// Suitable when the vector count is &gt; <see cref="ParallelThreshold"/>.
+    /// Parallel search: partitions the ID set across worker threads. Each worker maintains a thread-local
+    /// bounded min-heap of size <paramref name="topK"/> while scanning its partition, then a single-threaded
+    /// merge step combines the per-thread heaps into the final Top-K.
     /// <para>
-    /// Results are collected via <see cref="ConcurrentBag{T}"/>, which is thread-safe but incurs slight synchronization overhead.
-    /// Final sorting is performed on a single thread.
+    /// Allocation per query: O(numThreads × topK), independent of dataset size. No <see cref="System.Collections.Concurrent.ConcurrentBag{T}"/>,
+    /// no LINQ full-sort, no LOH pressure.
     /// </para>
     /// </summary>
     private List<(int Id, float Similarity)> ParallelSearchCore(float[] query, int topK)
     {
-        // Take a snapshot of IDs for parallel traversal (avoids enumerating HashSet across threads)
-        var ids = _ids.ToArray();
-        var results = new ConcurrentBag<(int Id, float Similarity)>();
+        var ids = GetIdsSnapshot();
 
-        Parallel.ForEach(ids, id =>
+        // Capture readonly locals for the closure (avoids field access in the hot loop).
+        var store = _vectorStore;
+        int k = topK;
+
+        var rangePartitioner = Partitioner.Create(0, ids.Length);
+
+        // Each Parallel.ForEach partition produces a local TopKHeap; we then merge them serially.
+        // Using the localInit / localFinally overload avoids any shared synchronization on the hot path.
+        var locals = new System.Collections.Concurrent.ConcurrentQueue<TopKHeap>();
+
+        Parallel.ForEach(
+            rangePartitioner,
+            () => new TopKHeap(k),
+            (range, _, local) =>
+            {
+                for (int i = range.Item1; i < range.Item2; i++)
+                {
+                    var id = ids[i];
+                    local.Push(id, TSim.Compute(query, store.Get(id)));
+                }
+                return local;
+            },
+            local => locals.Enqueue(local));
+
+        // Merge per-thread heaps into a final heap.
+        var merged = new TopKHeap(k);
+        foreach (var local in locals)
         {
-            results.Add((id, TSim.Compute(query, _vectorStore.Get(id))));
-        });
+            foreach (var (id, sim) in local.EnumerateUnordered())
+                merged.Push(id, sim);
+        }
+        return merged.DrainDescending();
+    }
 
-        return results.OrderByDescending(r => r.Similarity).Take(topK).ToList();
+    /// <summary>
+    /// Fixed-capacity min-heap keyed by similarity, used to maintain the running Top-K.
+    /// The smallest similarity sits at the root; once full, a new candidate replaces the root
+    /// only when it is strictly greater. No allocations after construction.
+    /// </summary>
+    private struct TopKHeap
+    {
+        private readonly int _capacity;
+        private readonly int[] _ids;
+        private readonly float[] _sims;
+        private int _count;
+
+        public TopKHeap(int capacity)
+        {
+            _capacity = capacity;
+            _ids = new int[capacity];
+            _sims = new float[capacity];
+            _count = 0;
+        }
+
+        public readonly int Count => _count;
+
+        public void Push(int id, float sim)
+        {
+            if (_count < _capacity)
+            {
+                _ids[_count] = id;
+                _sims[_count] = sim;
+                _count++;
+                SiftUp(_count - 1);
+            }
+            else if (sim > _sims[0])
+            {
+                _ids[0] = id;
+                _sims[0] = sim;
+                SiftDown(0);
+            }
+        }
+
+        private void SiftUp(int i)
+        {
+            while (i > 0)
+            {
+                int parent = (i - 1) >> 1;
+                if (_sims[i] < _sims[parent])
+                {
+                    (_sims[i], _sims[parent]) = (_sims[parent], _sims[i]);
+                    (_ids[i], _ids[parent]) = (_ids[parent], _ids[i]);
+                    i = parent;
+                }
+                else break;
+            }
+        }
+
+        private void SiftDown(int i)
+        {
+            int n = _count;
+            while (true)
+            {
+                int l = (i << 1) + 1;
+                int r = l + 1;
+                int smallest = i;
+                if (l < n && _sims[l] < _sims[smallest]) smallest = l;
+                if (r < n && _sims[r] < _sims[smallest]) smallest = r;
+                if (smallest == i) break;
+                (_sims[i], _sims[smallest]) = (_sims[smallest], _sims[i]);
+                (_ids[i], _ids[smallest]) = (_ids[smallest], _ids[i]);
+                i = smallest;
+            }
+        }
+
+        /// <summary>Returns the heap entries in descending similarity order as a new list.</summary>
+        public List<(int Id, float Similarity)> DrainDescending()
+        {
+            var result = new List<(int Id, float Similarity)>(_count);
+            for (int i = 0; i < _count; i++)
+                result.Add((_ids[i], _sims[i]));
+            result.Sort(static (a, b) => b.Similarity.CompareTo(a.Similarity));
+            return result;
+        }
+
+        /// <summary>Enumerates entries in arbitrary (heap) order without allocating.</summary>
+        public IEnumerable<(int Id, float Similarity)> EnumerateUnordered()
+        {
+            for (int i = 0; i < _count; i++)
+                yield return (_ids[i], _sims[i]);
+        }
     }
 }

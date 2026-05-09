@@ -32,73 +32,19 @@ public class MyRichTypeDb(string path) : QuiverDbContext(new QuiverDbOptions
     public QuiverSet<RichTypeEntity> RichItems { get; set; } = null!;
 }
 
-/// <summary>懒加载模式数据库上下文。</summary>
-public class MyLazyLoadDb(string path, int maxCachedPages = 16, int pageSize = 512)
+/// <summary>默认内存模式数据库上下文。</summary>
+public class MyLazyLoadDb(string path)
     : QuiverDbContext(new QuiverDbOptions
     {
         DatabasePath = path,
         DefaultMetric = DistanceMetric.Cosine,
-        EntityCache = EntityCacheMode.LazyPaging,
-        MaxCachedPages = maxCachedPages,
-        PageSize = pageSize
+        LargeFields = { MemoryMode = GlobalLargeFieldMemoryMode.InMemory }
     })
 {
     public QuiverSet<FaceFeature> Faces { get; set; } = null!;
 }
 
-/// <summary>懒加载 + WAL 模式数据库上下文。</summary>
-public class MyLazyLoadWalDb(string path) : QuiverDbContext(new QuiverDbOptions
-{
-    DatabasePath = path,
-    DefaultMetric = DistanceMetric.Cosine,
-    EntityCache = EntityCacheMode.LazyPaging,
-    MaxCachedPages = 8,
-    PageSize = 256,
-    EnableWal = true,
-    WalFlushToDisk = true
-})
-{
-    public QuiverSet<FaceFeature> Faces { get; set; } = null!;
-}
-
-/// <summary>WAL 模式数据库上下文（默认阈值 10,000）。</summary>
-public class MyWalDb(string path) : QuiverDbContext(new QuiverDbOptions
-{
-    DatabasePath = path,
-    DefaultMetric = DistanceMetric.Cosine,
-    EnableWal = true,
-    WalFlushToDisk = true
-})
-{
-    public QuiverSet<FaceFeature> Faces { get; set; } = null!;
-}
-
-/// <summary>WAL 模式数据库上下文（低压缩阈值，用于测试自动压缩）。</summary>
-public class MyWalDbLowThreshold(string path) : QuiverDbContext(new QuiverDbOptions
-{
-    DatabasePath = path,
-    DefaultMetric = DistanceMetric.Cosine,
-    EnableWal = true,
-    WalCompactionThreshold = 50,
-    WalFlushToDisk = true
-})
-{
-    public QuiverSet<FaceFeature> Faces { get; set; } = null!;
-}
-
-/// <summary>WAL 模式多向量数据库上下文。</summary>
-public class MyWalMultiVecDb(string path) : QuiverDbContext(new QuiverDbOptions
-{
-    DatabasePath = path,
-    DefaultMetric = DistanceMetric.Cosine,
-    EnableWal = true,
-    WalFlushToDisk = true
-})
-{
-    public QuiverSet<MultiVectorEntity> Items { get; set; } = null!;
-}
-
-// ── MemoryMapped 模式数据库上下文（已合并到 LazyPaging，保留结构供测试使用）──
+// ── MemoryMapped 模式数据库上下文 ──
 
 /// <summary>原 MemoryMapped 模式单向量数据库上下文（现等同 Heap 存储）。</summary>
 public class MyMmapFaceDb(string path) : QuiverDbContext(new QuiverDbOptions
@@ -120,18 +66,6 @@ public class MyMmapMultiVectorDb(string path) : QuiverDbContext(new QuiverDbOpti
     public QuiverSet<MultiVectorEntity> Items { get; set; } = null!;
 }
 
-/// <summary>原 MemoryMapped + WAL 模式数据库上下文。</summary>
-public class MyMmapWalDb(string path) : QuiverDbContext(new QuiverDbOptions
-{
-    DatabasePath = path,
-    DefaultMetric = DistanceMetric.Cosine,
-    EnableWal = true,
-    WalFlushToDisk = true
-})
-{
-    public QuiverSet<FaceFeature> Faces { get; set; } = null!;
-}
-
 // ── 度量测试数据库上下文 ──
 
 public class ManhattanDb(string path) : QuiverDbContext(new QuiverDbOptions { DatabasePath = path }) { public QuiverSet<ManhattanEntity> Items { get; set; } = null!; }
@@ -142,10 +76,19 @@ public class JaccardDb(string path) : QuiverDbContext(new QuiverDbOptions { Data
 public class CanberraDb(string path) : QuiverDbContext(new QuiverDbOptions { DatabasePath = path }) { public QuiverSet<CanberraEntity> Items { get; set; } = null!; }
 public class CustomSimDb(string path) : QuiverDbContext(new QuiverDbOptions { DatabasePath = path }) { public QuiverSet<CustomSimEntity> Items { get; set; } = null!; }
 
-// ── Schema 迁移测试上下文 ──
+// ── Half 向量测试上下文 ──
 
-/// <summary>
-/// 迁移读取上下文，配置了以下迁移规则（应对旧格式 QDB 文件）：
+/// <summary>Half[] 向量数据库上下文。</summary>
+public class HalfVectorDb(string path) : QuiverDbContext(new QuiverDbOptions
+{
+    DatabasePath = path,
+    DefaultMetric = DistanceMetric.Cosine
+})
+{
+    public QuiverSet<HalfVectorEntity> Items { get; set; } = null!;
+}
+
+// ── Schema 迁移测试上下文 ──
 /// <list type="bullet">
 ///   <item>OldTitle → Title（属性重命名）</item>
 ///   <item>Score：int 自动强转为 double（CoerceValue 隐式迁移）</item>
@@ -158,23 +101,6 @@ public class MigrationDb : QuiverDbContext
     public QuiverSet<MigrationEntity> Items { get; set; } = null!;
 
     public MigrationDb(string path) : base(new QuiverDbOptions { DatabasePath = path })
-    {
-        ConfigureMigration<MigrationEntity>(m => m
-            .RenameProperty("OldTitle", "Title"));
-    }
-}
-
-/// <summary>迁移 + WAL 组合上下文。</summary>
-public class MigrationWalDb : QuiverDbContext
-{
-    public QuiverSet<MigrationEntity> Items { get; set; } = null!;
-
-    public MigrationWalDb(string path) : base(new QuiverDbOptions
-    {
-        DatabasePath = path,
-        EnableWal = true,
-        WalFlushToDisk = true
-    })
     {
         ConfigureMigration<MigrationEntity>(m => m
             .RenameProperty("OldTitle", "Title"));

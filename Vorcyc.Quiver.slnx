@@ -2,12 +2,60 @@
   <Folder Name="/docs/">
     <File Path="logo.jpg" />
     <File Path="README.md" />
-    <File Path="README_Simple.md" />
     <File Path="README_zh_cn.md" />
-    <File Path="TechnicalDocument.md" />
+  </Folder>
+  <Folder Name="/docs/wiki_en/">
+    <File Path="wiki_en/01-Release-Notes.md" />
+    <File Path="wiki_en/02-Product-Overview.md" />
+    <File Path="wiki_en/03-Architecture.md" />
+    <File Path="wiki_en/04-Quick-Start.md" />
+    <File Path="wiki_en/05-Core-Concepts.md" />
+    <File Path="wiki_en/06-Distance-Metrics.md" />
+    <File Path="wiki_en/07-Index-Types.md" />
+    <File Path="wiki_en/08-CRUD.md" />
+    <File Path="wiki_en/09-Vector-Search.md" />
+    <File Path="wiki_en/10-Persistence.md" />
+    <File Path="wiki_en/11-Migration-System.md" />
+    <File Path="wiki_en/11a-Schema-Migration.md" />
+    <File Path="wiki_en/12-Multi-Vector-Fields.md" />
+    <File Path="wiki_en/13-Thread-Safety.md" />
+    <File Path="wiki_en/14-Lifecycle.md" />
+    <File Path="wiki_en/15-Configuration.md" />
+    <File Path="wiki_en/16-Internal-Implementation.md" />
+    <File Path="wiki_en/17-Examples.md" />
+    <File Path="wiki_en/18-API-Reference.md" />
+    <File Path="wiki_en/19-Usage-Recommendations.md" />
+    <File Path="wiki_en/Home.md" />
+  </Folder>
+  <Folder Name="/docs/wiki_hans/">
+    <File Path="wiki_hans/01-Release-Notes.md" />
+    <File Path="wiki_hans/02-Product-Overview.md" />
+    <File Path="wiki_hans/03-Architecture.md" />
+    <File Path="wiki_hans/04-Quick-Start.md" />
+    <File Path="wiki_hans/05-Core-Concepts.md" />
+    <File Path="wiki_hans/06-Distance-Metrics.md" />
+    <File Path="wiki_hans/07-Index-Types.md" />
+    <File Path="wiki_hans/08-CRUD.md" />
+    <File Path="wiki_hans/09-Vector-Search.md" />
+    <File Path="wiki_hans/10-Persistence.md" />
+    <File Path="wiki_hans/11-Migration-System.md" />
+    <File Path="wiki_hans/11a-Schema-Migration.md" />
+    <File Path="wiki_hans/12-Multi-Vector-Fields.md" />
+    <File Path="wiki_hans/13-Thread-Safety.md" />
+    <File Path="wiki_hans/14-Lifecycle.md" />
+    <File Path="wiki_hans/15-Configuration.md" />
+    <File Path="wiki_hans/16-Internal-Implementation.md" />
+    <File Path="wiki_hans/17-Examples.md" />
+    <File Path="wiki_hans/18-API-Reference.md" />
+    <File Path="wiki_hans/19-Usage-Recommendations.md" />
+    <File Path="wiki_hans/Home.md" />
   </Folder>
   <Folder Name="/TESTS/">
     <Project Path="TESTS/all_basic_tests/all_basic_tests.csproj" />
+    <Project Path="TESTS/BuildAudioDb/BuildAudioDb.csproj" />
+    <Project Path="tests/MemoryPressure_test/MemoryPressure_test.csproj" Id="bae3171b-14f4-4ddf-b5f2-340086939d3e" />
+    <Project Path="tests/Migrate_Load_test/Migrate_Load_test.csproj" Id="f806a7e0-dd34-4d4e-b0d7-64b62a0fefc9" />
   </Folder>
+  <Project Path="Vorcyc.Quiver.SourceGenerators/Vorcyc.Quiver.SourceGenerators.csproj" />
   <Project Path="Vorcyc.Quiver/Vorcyc.Quiver.csproj" />
 </Solution>

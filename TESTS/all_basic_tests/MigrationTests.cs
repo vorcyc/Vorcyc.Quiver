@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using Vorcyc.Quiver;
+using Vorcyc.Quiver.Migration;
 using static AllBasicTests.TestHelper;
 
 namespace AllBasicTests;
@@ -16,7 +18,6 @@ namespace AllBasicTests;
 ///   <item>值类型自动强转（int Score → double Score）</item>
 ///   <item>字段删除（Legacy 字段在新版不存在，加载时自动跳过）</item>
 ///   <item>字段新增（NewField 在旧文件中不存在，加载后取默认值 "default"）</item>
-///   <item>迁移 + WAL 并存（WAL 回放 + 快照加载均应用迁移规则）</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -87,7 +88,6 @@ public static class MigrationTests
         await Test_TypeCoercion();
         await Test_RemovedField();
         await Test_AddedField();
-        await Test_MigrationWithWal();
     }
 
     // ==================== 场景 1：属性重命名 ====================
@@ -105,6 +105,8 @@ public static class MigrationTests
                 ("R01", "标题_1", 10, "lg1", RandomVector(rng, 32)),
                 ("R05", "标题_5", 50, "lg5", RandomVector(rng, 32)),
             ]);
+
+            await MigrateLegacyAsync(path);
 
             var db = new MigrationDb(path);
             await db.LoadAsync();
@@ -134,6 +136,8 @@ public static class MigrationTests
                 ("T02", "类型测试_2", 300, "x", RandomVector(rng, 32)),
             ]);
 
+            await MigrateLegacyAsync(path);
+
             var db = new MigrationDb(path);
             await db.LoadAsync();
 
@@ -158,6 +162,8 @@ public static class MigrationTests
             [
                 ("D01", "删除测试", 42, "这个字段在新版中不存在", RandomVector(rng, 32)),
             ]);
+
+            await MigrateLegacyAsync(path);
 
             var db = new MigrationDb(path);
             Exception? ex = null;
@@ -185,6 +191,8 @@ public static class MigrationTests
                 ("N01", "新增字段测试", 7, "old", RandomVector(rng, 32)),
             ]);
 
+            await MigrateLegacyAsync(path);
+
             var db = new MigrationDb(path);
             await db.LoadAsync();
 
@@ -196,67 +204,32 @@ public static class MigrationTests
         finally { Cleanup(path); }
     }
 
-    // ==================== 场景 5：迁移 + WAL 并存 ====================
-    private static async Task Test_MigrationWithWal()
-    {
-        Console.WriteLine("\n═══ Migration-5. 迁移规则 + WAL 回放并存 ═══");
-
-        var path = Path.GetTempFileName() + ".vdb";
-        try
-        {
-            var rng = new Random(5);
-            WriteLegacyQdb(path,
-            [
-                ("W00", "WAL迁移_0", 0,  "lg0", RandomVector(rng, 32)),
-                ("W01", "WAL迁移_1", 5,  "lg1", RandomVector(rng, 32)),
-                ("W02", "WAL迁移_2", 10, "lg2", RandomVector(rng, 32)),
-                ("W03", "WAL迁移_3", 15, "lg3", RandomVector(rng, 32)),
-                ("W04", "WAL迁移_4", 20, "lg4", RandomVector(rng, 32)),
-            ]);
-
-            // 加载旧快照，追加新实体，写 WAL
-            var walDb = new MigrationWalDb(path);
-            await walDb.LoadAsync();
-
-            Assert(walDb.Items.Count == 5, "Migration-5: WAL 上下文加载旧版快照正确（5 条）");
-            Assert(walDb.Items.Find("W02")?.Title == "WAL迁移_2",
-                "Migration-5: WAL 加载后重命名规则已应用");
-
-            walDb.Items.Add(new MigrationEntity
-            {
-                Id = "W99",
-                Title = "WAL新增",
-                Score = 99.5,
-                NewField = "wal_new",
-                Embedding = RandomVector(rng, 32)
-            });
-            await walDb.SaveChangesAsync();
-            walDb.Dispose();
-
-            // 重新打开，验证快照 + WAL 回放结果
-            var reloadDb = new MigrationWalDb(path);
-            await reloadDb.LoadAsync();
-
-            Assert(reloadDb.Items.Count == 6, "Migration-5: 快照(5) + WAL(1) 回放后共 6 条");
-
-            var w99 = reloadDb.Items.Find("W99");
-            Assert(w99 != null, "Migration-5: WAL 回放新实体 W99 可找到");
-            Assert(w99?.Title == "WAL新增", "Migration-5: WAL 回放实体 Title 正确");
-            Assert(w99?.Score == 99.5, "Migration-5: WAL 回放 double Score 正确");
-
-            var w00 = reloadDb.Items.Find("W00");
-            Assert(w00?.Title == "WAL迁移_0", "Migration-5: 快照旧实体重命名规则仍正确");
-            reloadDb.Dispose();
-        }
-        finally { Cleanup(path); }
-    }
-
     // ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 4.0 起运行时不再接受 v1/v2/v3，本辅助方法原地升级为 v4，
+    /// 使后续的 <c>MigrationDb.LoadAsync()</c> 走正常运行时 schema 迁移路径。
+    /// </summary>
+    private static async Task MigrateLegacyAsync(string path)
+    {
+        var typeMap = new Dictionary<string, Type>
+        {
+            [typeof(MigrationEntity).FullName!] = typeof(MigrationEntity),
+        };
+        var rule = MigrationBuilder<MigrationEntity>.Build(m => m
+            .RenameProperty("OldTitle", "Title"));
+        var migrationRules = new Dictionary<string, SchemaMigrationRule>
+        {
+            [typeof(MigrationEntity).FullName!] = rule,
+        };
+        await Vorcyc.Quiver.Migration.QuiverMigrator.MigrateAsync(
+            path, path, typeMap,
+            migrationRules: migrationRules,
+            options: new Vorcyc.Quiver.Migration.MigrateOptions { Overwrite = true, AllowNoop = true });
+    }
 
     private static void Cleanup(string path)
     {
         if (File.Exists(path)) File.Delete(path);
-        var wal = path + ".wal";
-        if (File.Exists(wal)) File.Delete(wal);
     }
 }

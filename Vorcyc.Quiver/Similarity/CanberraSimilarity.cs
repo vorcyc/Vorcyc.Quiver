@@ -3,18 +3,18 @@ using System.Numerics;
 namespace Vorcyc.Quiver.Similarity;
 
 /// <summary>
-/// 堪培拉距离转相似度：<c>similarity = 1 - (1/n) × Σ |xᵢ-yᵢ| / (|xᵢ| + |yᵢ|)</c>。值域 [0, 1]。
+/// Canberra distance converted to similarity: <c>similarity = 1 - (1/n) × Σ |xᵢ-yᵢ| / (|xᵢ| + |yᵢ|)</c>. Range [0, 1].
 /// <para>
-/// 一种加权的 L1 距离——每个维度的差异都按该维度的量级归一化。
-/// 对接近零的值非常敏感（分母小时权重大），特别适合稀疏数据。
-/// 当 <c>xᵢ = yᵢ = 0</c> 时该维度贡献为 0（完全匹配）。
+/// A weighted L1 distance where each dimension's difference is normalized by the magnitude of that dimension.
+/// Highly sensitive to values near zero (small denominators produce large weights), making it especially
+/// suitable for sparse data. When <c>xᵢ = yᵢ = 0</c> the contribution of that dimension is 0 (perfect match).
 /// </para>
 /// <para>
-/// <b>适用场景</b>：
+/// <b>Recommended use cases</b>:
 /// <list type="bullet">
-///   <item>稀疏文本特征（TF-IDF、BoW）的文档距离——稀疏维度的差异不被密集维度掩盖</item>
-///   <item>化学指纹、生态计数数据的比较</item>
-///   <item>数据分布差异较大时（不同量级的特征混合）的鲁棒度量</item>
+///   <item>Document distance with sparse text features (TF-IDF, BoW) — differences in sparse dimensions are not dominated by dense ones.</item>
+///   <item>Comparison of chemical fingerprints and ecological count data.</item>
+///   <item>Robust metric when feature magnitudes vary widely (mixed-scale features).</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -39,7 +39,7 @@ public readonly struct CanberraSimilarity : ISimilarity<float>
                 var vy = new Vector<float>(y[i..]);
                 var absDiff = Vector.Abs(vx - vy);
                 var absDenom = Vector.Abs(vx) + Vector.Abs(vy);
-                // 分母为零时用 1 替代（此时分子也为零，商为 0，语义正确）
+                // When denominator is zero substitute 1 (numerator is also zero, so the quotient is 0 — semantically correct)
                 var safeDenom = Vector.ConditionalSelect(
                     Vector.GreaterThan(absDenom, Vector<float>.Zero), absDenom, Vector<float>.One);
                 vsum += absDiff / safeDenom;

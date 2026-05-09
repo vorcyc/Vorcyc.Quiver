@@ -30,5 +30,47 @@ public static class BoundaryTests
         {
             Assert(false, $"文件不存在时不应抛异常：{ex.Message}");
         }
+
+        // 搜索参数边界
+        var searchPath = "test_search_boundaries.vdb";
+        try
+        {
+            var db = new MyFaceDb(searchPath);
+            db.Faces.Add(new FaceFeature
+            {
+                PersonId = "B001",
+                Name = "Boundary",
+                Embedding = RandomVector(new Random(5), 128)
+            });
+
+            var query = RandomVector(new Random(6), 128);
+            AssertThrows<ArgumentOutOfRangeException>(() => db.Faces.Search(query, 0), "Search topK=0 抛出 ArgumentOutOfRangeException");
+            AssertThrows<ArgumentOutOfRangeException>(() => db.Faces.Search(query, -1), "Search topK<0 抛出 ArgumentOutOfRangeException");
+            AssertThrows<ArgumentOutOfRangeException>(() => db.Faces.Search(e => e.Embedding, query, 1, _ => true, 0), "Search overFetchMultiplier=0 抛出 ArgumentOutOfRangeException");
+            AssertThrows<ArgumentException>(() => db.Faces.SearchByThreshold(e => e.Embedding, query, float.NaN), "SearchByThreshold threshold=NaN 抛出 ArgumentException");
+            AssertThrows<ArgumentNullException>(() => db.Faces.Search(null!, 1), "Search queryVector=null 抛出 ArgumentNullException");
+        }
+        finally
+        {
+            if (File.Exists(searchPath)) File.Delete(searchPath);
+        }
+    }
+
+    private static void AssertThrows<TException>(Action action, string testName)
+        where TException : Exception
+    {
+        try
+        {
+            action();
+            Assert(false, testName);
+        }
+        catch (TException)
+        {
+            Assert(true, testName);
+        }
+        catch (Exception ex)
+        {
+            Assert(false, $"{testName}（实际异常：{ex.GetType().Name}）");
+        }
     }
 }

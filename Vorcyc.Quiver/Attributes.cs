@@ -63,7 +63,44 @@ public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = Dista
     /// (e.g., a face embedding — not every image contains a face).
     /// </para>
     /// </summary>
-    public bool Optional { get; set; }
+    public bool Nullable { get; set; }
+
+    /// <summary>
+    /// Field-level vector memory strategy. This value is honored only when
+    /// <see cref="QuiverDbOptions.Vectors"/>.<see cref="QuiverVectorOptions.MemoryMode"/> is <see cref="GlobalVectorMemoryMode.PerField"/>.
+    /// <para>
+    /// If this property is not explicitly set and the global vector mode is <see cref="GlobalVectorMemoryMode.PerField"/>,
+    /// the field uses this default value: <see cref="VectorMemoryMode.InMemory"/>.
+    /// </para>
+    /// </summary>
+    public VectorMemoryMode MemoryMode { get; set; } = VectorMemoryMode.InMemory;
+
+    /// <summary>
+    /// On-disk quantization mode for this vector field. Default is <see cref="VectorQuantization.None"/> (raw <c>float32</c>).
+    /// <para>
+    /// Quantization only affects how the vector is encoded inside <c>VectorBlob</c> segments and the in-memory
+    /// vector store; the C# property contract remains <c>float[]</c>. Set this to <see cref="VectorQuantization.Sq8"/>
+    /// to reduce the on-disk and mmap footprint to roughly 25% of raw float storage at the cost of a small
+    /// recall regression (typically &lt; 1% for normalized embeddings).
+    /// </para>
+    /// </summary>
+    public VectorQuantization Quantization { get; set; } = VectorQuantization.None;
+
+    /// <summary>
+    /// Optional Matryoshka-style effective dimensionality. When set to a positive value smaller than
+    /// <see cref="Dimensions"/>, only the first <c>EffectiveDimensions</c> components of each vector are
+    /// persisted, mmapped, indexed, and returned by lazy materialization.
+    /// <para>
+    /// Use this with embedding models that support truncation (e.g. OpenAI <c>text-embedding-3-*</c>,
+    /// Nomic Embed, Matryoshka-trained models) to trade a small amount of recall for large storage and
+    /// search savings. The default <c>0</c> (or any value ≥ <see cref="Dimensions"/>) disables truncation.
+    /// </para>
+    /// <para>
+    /// When combined with <see cref="DistanceMetric.Cosine"/>, vectors are re-normalized after truncation
+    /// so similarity remains in the expected range.
+    /// </para>
+    /// </summary>
+    public int EffectiveDimensions { get; set; }
 
     /// <summary>
     /// Custom similarity computation type. When set, <see cref="Metric"/> is ignored.
@@ -82,6 +119,48 @@ public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = Dista
 }
 
 /// <summary>
+/// Marks a property as a large payload field (<c>byte[]</c>). The data is stored in a dedicated
+/// <c>SegmentKind.Blob</c> segment instead of being inlined into the per-entity metadata segment.
+/// <para>
+/// Use this for thumbnails, raw audio frames, or any sizeable <c>byte[]</c> payload to keep the
+/// EntityMeta segment small (faster cold-load) and to enable payload-level out-of-core access.
+/// </para>
+/// <para>
+/// The marked property type must be <c>byte[]</c>. With <see cref="LargeFieldMemoryMode.LazyLoad"/>
+/// or <see cref="LargeFieldMemoryMode.PagedCache"/>, declare the property as <c>partial</c> in a
+/// <c>partial</c> entity type so the source generator can materialize the payload on demand.
+/// </para>
+/// </summary>
+/// <example>
+/// <code>
+/// public class Photo
+/// {
+///     [QuiverKey] public Guid Id { get; set; }
+///     [QuiverLargeField] public byte[]? Thumbnail { get; set; }
+///     [QuiverVector(512)] public float[]? Embedding { get; set; }
+/// }
+/// </code>
+/// </example>
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
+public sealed class QuiverLargeFieldAttribute : Attribute
+{
+    /// <summary>
+    /// Whether the large field value is allowed to be <c>null</c>. Default is <c>true</c>.
+    /// </summary>
+    public bool Nullable { get; set; } = true;
+
+    /// <summary>
+    /// Field-level large-field memory strategy. This value is honored only when
+    /// <see cref="QuiverDbOptions.LargeFields"/>.<see cref="QuiverLargeFieldOptions.MemoryMode"/> is <see cref="GlobalLargeFieldMemoryMode.PerField"/>.
+    /// <para>
+    /// If this property is not explicitly set and the global large-field mode is <see cref="GlobalLargeFieldMemoryMode.PerField"/>,
+    /// the field uses this default value: <see cref="LargeFieldMemoryMode.InMemory"/>.
+    /// </para>
+    /// </summary>
+    public LargeFieldMemoryMode MemoryMode { get; set; } = LargeFieldMemoryMode.InMemory;
+}
+
+/// <summary>
 /// Marks a property as the entity primary key. Each entity class must have exactly one primary key property.
 /// <para>
 /// The primary key is used for unique identification, deduplication, and <see cref="QuiverSet{TEntity}.Find"/> lookups.
@@ -97,6 +176,56 @@ public class QuiverVectorAttribute(int dimensions, DistanceMetric metric = Dista
 /// </example>
 [AttributeUsage(AttributeTargets.Property)]
 public class QuiverKeyAttribute : Attribute;
+
+/// <summary>
+/// 为实体类型显式声明一个<b>持久化稳定名</b>，写入 v4 文件段头和 footer 时以该名为准，
+/// 取代默认的 <see cref="System.Type.FullName"/>。
+/// <para>
+/// 适用场景：随时间推移想重构实体的命名空间或类名，又不希望旧文件因 TypeName 不匹配
+/// 而失效。一旦贴上特性，文件里的标识就与 CLR 命名空间解耦。
+/// </para>
+/// <para>
+/// 向后兼容：
+/// <list type="bullet">
+///   <item>未贴此特性的类型继续使用 <c>Type.FullName</c>，原有文件零变化。</item>
+///   <item><see cref="QuiverDbContext"/> 在加载时会同时登记<see cref="Name"/>和<see cref="System.Type.FullName"/>，
+///   因此第一次给一个旧类型加上特性时，旧文件（按 FullName 写入）仍能读出来——
+///   下一次 <c>SaveAsync</c> 会以新名写回，完成迁移。</item>
+///   <item>当 <see cref="Migration.QuiverMigrator.MigrateAsync"/> 升级 v1/v2/v3 时，
+///   也会按解析后的稳定名重 key，使旧文件直接可被新代码读取。</item>
+/// </list>
+/// </para>
+/// </summary>
+/// <example>
+/// <code>
+/// [QuiverEntity(Name = "AudioMediaEntity")]
+/// public class AudioMediaEntity
+/// {
+///     [QuiverKey] public string Id { get; set; } = "";
+///     // ...
+/// }
+/// </code>
+/// </example>
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = false)]
+public sealed class QuiverEntityAttribute : Attribute
+{
+    /// <summary>
+    /// 持久化稳定名。必须非空、且在一个 <see cref="QuiverDbContext"/> 内全局唯一。
+    /// 推荐使用类名或带前缀的命名空间无关字符串，例如 <c>"AudioMediaEntity"</c> 或 <c>"app:AudioMedia"</c>。
+    /// </summary>
+    public string Name { get; }
+
+    /// <summary>
+    /// 构造特性实例。
+    /// </summary>
+    /// <param name="name">持久化稳定名；不可为 <see langword="null"/> 或空字符串。</param>
+    public QuiverEntityAttribute(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            throw new ArgumentException("QuiverEntityAttribute.Name cannot be null or empty.", nameof(name));
+        Name = name;
+    }
+}
 
 /// <summary>
 /// Configures the index type and its parameters for a vector field.
@@ -327,37 +456,118 @@ public enum ExportFormat
 }
 
 /// <summary>
-/// Controls the in-memory cache strategy for <b>entity objects</b> (<c>TEntity</c>).
+/// 单个大字段（<see cref="QuiverLargeFieldAttribute"/>）的内存策略。
 /// <para>
-/// Configured via <see cref="QuiverDbOptions.EntityCache"/>.
+/// 该枚举只承载字段级可选的具体策略，<b>不</b>包含 <c>PerField</c> 这类仅在全局有意义的值——
+/// 全局策略请使用 <see cref="GlobalLargeFieldMemoryMode"/>。
+/// </para>
+/// </summary>
+/// <seealso cref="QuiverLargeFieldAttribute"/>
+/// <seealso cref="GlobalLargeFieldMemoryMode"/>
+public enum LargeFieldMemoryMode
+{
+    /// <summary>
+    /// Large fields are materialized into entity properties when the database is loaded.
+    /// </summary>
+    InMemory,
+
+    /// <summary>
+    /// Large fields are materialized on first access.
+    /// </summary>
+    LazyLoad,
+
+    /// <summary>
+    /// Large fields are cached in bounded pages.
+    /// </summary>
+    PagedCache,
+}
+
+/// <summary>
+/// 大字段负载的<b>全局</b>内存策略，配置于
+/// <see cref="QuiverDbOptions.LargeFields"/>.<see cref="QuiverLargeFieldOptions.MemoryMode"/>。
+/// <para>
+/// 在字段级具体策略（<see cref="LargeFieldMemoryMode"/>）之外，额外提供 <see cref="PerField"/>，
+/// 表示尊重每个 <see cref="QuiverLargeFieldAttribute"/> 上声明的字段级策略。
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverDbOptions"/>
-public enum EntityCacheMode
+/// <seealso cref="LargeFieldMemoryMode"/>
+public enum GlobalLargeFieldMemoryMode
 {
     /// <summary>
-    /// Full memory (default). All entity objects reside in an in-memory dictionary; access latency is minimal and behavior is identical to prior versions.
-    /// <para>
-    /// Suitable for small entity objects or datasets with fewer than one million entries.
-    /// </para>
+    /// Large fields are materialized into entity properties when the database is loaded.
     /// </summary>
-    FullMemory,
+    InMemory,
 
     /// <summary>
-    /// Lazy paging cache. Entity objects are managed in pages (<see cref="QuiverDbOptions.PageSize"/> entities/page).
-    /// At most <see cref="QuiverDbOptions.MaxCachedPages"/> pages are kept in memory;
-    /// cold pages are evicted via LRU and serialized to <c>.qvpg</c> page files, loaded back on demand.
-    /// <para>
-    /// Vector index structures (HNSW/IVF etc.) are not affected and always remain in memory to ensure search performance.
-    /// </para>
-    /// <para>
-    /// Suitable for large entity objects or datasets exceeding one million entries with localized access patterns.
-    /// </para>
-    /// <para>
-    /// Requires: <see cref="QuiverDbOptions.DatabasePath"/> must be set.
-    /// Page files are stored in the <c>{DatabasePath}.pages\{EntityTypeName}\</c> directory.
-    /// </para>
+    /// Large fields are materialized on first access.
     /// </summary>
-    LazyPaging
+    LazyLoad,
+
+    /// <summary>
+    /// Large fields are cached in bounded pages.
+    /// </summary>
+    PagedCache,
+
+    /// <summary>
+    /// Use the memory strategy declared on each <see cref="QuiverLargeFieldAttribute"/>.
+    /// Fields that do not explicitly set <see cref="QuiverLargeFieldAttribute.MemoryMode"/> use
+    /// <see cref="LargeFieldMemoryMode.InMemory"/> because that is the attribute default.
+    /// </summary>
+    PerField,
 }
+
+/// <summary>
+/// 单个向量字段（<see cref="QuiverVectorAttribute"/>）的内存策略。
+/// <para>
+/// 该枚举只承载字段级可选的具体策略，<b>不</b>包含 <c>Auto</c> / <c>PerField</c> 这类仅在全局有意义的值——
+/// 全局策略请使用 <see cref="GlobalVectorMemoryMode"/>。
+/// </para>
+/// </summary>
+/// <seealso cref="QuiverVectorAttribute"/>
+/// <seealso cref="GlobalVectorMemoryMode"/>
+public enum VectorMemoryMode
+{
+    /// <summary>Vectors are stored in managed memory.</summary>
+    InMemory,
+
+    /// <summary>Vectors are materialized on first property access while the backing store remains managed memory.</summary>
+    LazyLoad,
+
+    /// <summary>Persisted vectors are exposed through memory-mapped regions.</summary>
+    MemoryMapped,
+}
+
+/// <summary>
+/// 向量负载的<b>全局</b>内存策略，配置于
+/// <see cref="QuiverDbOptions.Vectors"/>.<see cref="QuiverVectorOptions.MemoryMode"/>。
+/// <para>
+/// 在字段级具体策略（<see cref="VectorMemoryMode"/>）之外，额外提供 <see cref="Auto"/>（按文件大小阈值自动选择）
+/// 与 <see cref="PerField"/>（尊重每个 <see cref="QuiverVectorAttribute"/> 上声明的字段级策略）。
+/// </para>
+/// </summary>
+/// <seealso cref="QuiverDbOptions"/>
+/// <seealso cref="VectorMemoryMode"/>
+public enum GlobalVectorMemoryMode
+{
+    /// <summary>Vectors are stored in managed memory.</summary>
+    InMemory,
+
+    /// <summary>Vectors are materialized on first property access while the backing store remains managed memory.</summary>
+    LazyLoad,
+
+    /// <summary>Persisted vectors are exposed through memory-mapped regions.</summary>
+    MemoryMapped,
+
+    /// <summary>Automatically chooses memory mapping when the configured threshold is reached.</summary>
+    Auto,
+
+    /// <summary>
+    /// Use the memory strategy declared on each <see cref="QuiverVectorAttribute"/>.
+    /// Fields that do not explicitly set <see cref="QuiverVectorAttribute.MemoryMode"/> use
+    /// <see cref="VectorMemoryMode.InMemory"/> because that is the attribute default.
+    /// </summary>
+    PerField,
+}
+
 

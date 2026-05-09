@@ -126,7 +126,7 @@ public static class StorageTests
     // ==================== 11. 新增属性类型往返测试（Binary 格式）====================
     private static async Task Test11_RichTypeRoundTrip()
     {
-        Console.WriteLine("\n═══ 11. 新增属性类型往返测试（byte/short/Half/DateTimeOffset/TimeSpan/byte[]/double[]）═══");
+        Console.WriteLine("\n═══ 11. 新增属性类型往返测试（标量 byte/short/Half/DateTimeOffset/TimeSpan/ushort/uint/ulong/sbyte/char/DateOnly/TimeOnly + 数组 byte[]/double[]/ushort[]/uint[]/ulong[]/sbyte[]/DateOnly[]/TimeOnly[]/short[]/int[]/long[]/bool[]/Half[]）═══");
 
         var path = Path.GetTempFileName() + ".vdb";
         var random = new Random(42);
@@ -147,6 +147,24 @@ public static class StorageTests
                 Duration = TimeSpan.FromMinutes(i * 1.5),
                 Blob = Enumerable.Range(0, 32).Select(j => (byte)((i + j) % 256)).ToArray(),
                 Weights = Enumerable.Range(0, 64).Select(_ => random.NextDouble() * 2 - 1).ToArray(),
+                UShortVal = (ushort)(i * 7 % ushort.MaxValue),
+                UIntVal = (uint)i * 100_003u,
+                ULongVal = (ulong)i * 1_000_000_007UL,
+                SByteVal = (sbyte)(i % 127 - 63),
+                CharVal = (char)('A' + i % 26),
+                DateVal = new DateOnly(2025, 1, 1).AddDays(i),
+                TimeVal = new TimeOnly(0, 0, 0).Add(TimeSpan.FromSeconds(i * 13)),
+                UShortArr = Enumerable.Range(0, 4).Select(j => (ushort)(i + j)).ToArray(),
+                UIntArr = Enumerable.Range(0, 4).Select(j => (uint)(i + j) * 13u).ToArray(),
+                ULongArr = Enumerable.Range(0, 4).Select(j => (ulong)(i + j) * 17UL).ToArray(),
+                SByteArr = Enumerable.Range(0, 4).Select(j => (sbyte)((i + j) % 127 - 63)).ToArray(),
+                DateArr = Enumerable.Range(0, 3).Select(j => new DateOnly(2025, 1, 1).AddDays(i + j)).ToArray(),
+                TimeArr = Enumerable.Range(0, 3).Select(j => new TimeOnly(0, 0, 0).Add(TimeSpan.FromSeconds(i + j))).ToArray(),
+                ShortArr = Enumerable.Range(0, 4).Select(j => (short)(i + j - 250)).ToArray(),
+                IntArr = Enumerable.Range(0, 4).Select(j => (i + j) * 100_003).ToArray(),
+                LongArr = Enumerable.Range(0, 4).Select(j => (long)(i + j) * 1_000_000_007L).ToArray(),
+                BoolArr = Enumerable.Range(0, 5).Select(j => (i + j) % 2 == 0).ToArray(),
+                HalfArr = Enumerable.Range(0, 4).Select(j => (Half)((i + j) * 0.25f)).ToArray(),
                 Embedding = RandomVector(random, 128)
             };
             dbWrite.RichItems.Add(originals[i]);
@@ -181,7 +199,29 @@ public static class StorageTests
                 loaded.Duration != orig.Duration)
             { allMatch = false; break; }
 
+            if (loaded.UShortVal != orig.UShortVal ||
+                loaded.UIntVal != orig.UIntVal ||
+                loaded.ULongVal != orig.ULongVal ||
+                loaded.SByteVal != orig.SByteVal ||
+                loaded.CharVal != orig.CharVal ||
+                loaded.DateVal != orig.DateVal ||
+                loaded.TimeVal != orig.TimeVal)
+            { allMatch = false; break; }
+
             if (!loaded.Blob.AsSpan().SequenceEqual(orig.Blob))
+            { allMatch = false; break; }
+
+            if (!loaded.UShortArr.AsSpan().SequenceEqual(orig.UShortArr) ||
+                !loaded.UIntArr.AsSpan().SequenceEqual(orig.UIntArr) ||
+                !loaded.ULongArr.AsSpan().SequenceEqual(orig.ULongArr) ||
+                !loaded.SByteArr.AsSpan().SequenceEqual(orig.SByteArr) ||
+                !loaded.DateArr.AsSpan().SequenceEqual(orig.DateArr) ||
+                !loaded.TimeArr.AsSpan().SequenceEqual(orig.TimeArr) ||
+                !loaded.ShortArr.AsSpan().SequenceEqual(orig.ShortArr) ||
+                !loaded.IntArr.AsSpan().SequenceEqual(orig.IntArr) ||
+                !loaded.LongArr.AsSpan().SequenceEqual(orig.LongArr) ||
+                !loaded.BoolArr.AsSpan().SequenceEqual(orig.BoolArr) ||
+                !loaded.HalfArr.AsSpan().SequenceEqual(orig.HalfArr))
             { allMatch = false; break; }
 
             if (loaded.Weights.Length != orig.Weights.Length)
@@ -196,7 +236,17 @@ public static class StorageTests
                 { allMatch = false; break; }
             if (!allMatch) break;
         }
-        Assert(allMatch, $"[Binary] 全部 {entityCount} 条七种新类型字段逐字段精度校验通过");
+        Assert(allMatch, $"[Binary] 全部 {entityCount} 条扩展类型字段（含 ushort/uint/ulong/sbyte/char/DateOnly/TimeOnly 及数组）逐字段精度校验通过");
+
+        // ── 新增类型边界值验证 ──
+        var rt0 = dbRead.RichItems.Find("RT00000")!;
+        Assert(rt0.DateVal == new DateOnly(2025, 1, 1) && rt0.TimeVal == new TimeOnly(0, 0, 0),
+            "[Binary] 边界值：DateOnly=2025-01-01, TimeOnly=00:00:00");
+        Assert(rt0.CharVal == 'A' && rt0.SByteVal == (sbyte)(-63),
+            "[Binary] 边界值：char='A', sbyte=-63");
+        Assert(rt0.IntArr.AsSpan().SequenceEqual([0, 100_003, 200_006, 300_009]) &&
+               rt0.BoolArr.AsSpan().SequenceEqual([true, false, true, false, true]),
+            "[Binary] int[] / bool[] 往返正确（RT00000）");
 
         // ── 边界值验证 ──
         var first = dbRead.RichItems.Find("RT00000")!;
@@ -225,6 +275,24 @@ public static class StorageTests
             Duration = TimeSpan.FromDays(365),
             Blob = [0xFF, 0x00, 0xAB],
             Weights = [double.MinValue, 0, double.MaxValue],
+            UShortVal = ushort.MaxValue,
+            UIntVal = uint.MaxValue,
+            ULongVal = ulong.MaxValue,
+            SByteVal = sbyte.MinValue,
+            CharVal = '\uFFFF',
+            DateVal = DateOnly.MaxValue,
+            TimeVal = TimeOnly.MaxValue,
+            UShortArr = [ushort.MinValue, ushort.MaxValue],
+            UIntArr = [uint.MinValue, uint.MaxValue],
+            ULongArr = [ulong.MinValue, ulong.MaxValue],
+            SByteArr = [sbyte.MinValue, 0, sbyte.MaxValue],
+            DateArr = [DateOnly.MinValue, DateOnly.MaxValue],
+            TimeArr = [TimeOnly.MinValue, TimeOnly.MaxValue],
+            ShortArr = [short.MinValue, 0, short.MaxValue],
+            IntArr = [int.MinValue, 0, int.MaxValue],
+            LongArr = [long.MinValue, 0, long.MaxValue],
+            BoolArr = [true, false, true],
+            HalfArr = [Half.MinValue, (Half)0f, Half.MaxValue],
             Embedding = RandomVector(random, 128)
         });
         await dbRead.SaveAsync();
@@ -238,6 +306,22 @@ public static class StorageTests
             "[Binary] Upsert 后 double[] 极值往返正确");
         Assert(upserted.Blob.Length == 3 && upserted.Blob[0] == 0xFF && upserted.Blob[2] == 0xAB,
             "[Binary] Upsert 后 byte[] 往返正确");
+        Assert(upserted.UShortVal == ushort.MaxValue && upserted.UIntVal == uint.MaxValue && upserted.ULongVal == ulong.MaxValue,
+            "[Binary] Upsert 后无符号整型极值（ushort/uint/ulong.MaxValue）往返正确");
+        Assert(upserted.SByteVal == sbyte.MinValue && upserted.CharVal == '\uFFFF',
+            "[Binary] Upsert 后 sbyte.MinValue / char=U+FFFF 往返正确");
+        Assert(upserted.DateVal == DateOnly.MaxValue && upserted.TimeVal == TimeOnly.MaxValue,
+            "[Binary] Upsert 后 DateOnly.MaxValue / TimeOnly.MaxValue 往返正确");
+        Assert(upserted.ULongArr.AsSpan().SequenceEqual([ulong.MinValue, ulong.MaxValue]) &&
+               upserted.DateArr.AsSpan().SequenceEqual([DateOnly.MinValue, DateOnly.MaxValue]),
+            "[Binary] Upsert 后新增数组类型（ulong[]/DateOnly[]）极值往返正确");
+        Assert(upserted.IntArr.AsSpan().SequenceEqual([int.MinValue, 0, int.MaxValue]) &&
+               upserted.LongArr.AsSpan().SequenceEqual([long.MinValue, 0L, long.MaxValue]) &&
+               upserted.ShortArr.AsSpan().SequenceEqual((short[])[short.MinValue, 0, short.MaxValue]),
+            "[Binary] Upsert 后 short[]/int[]/long[] 极值往返正确");
+        Assert(upserted.BoolArr.AsSpan().SequenceEqual([true, false, true]) &&
+               upserted.HalfArr.AsSpan().SequenceEqual((Half[])[Half.MinValue, (Half)0f, Half.MaxValue]),
+            "[Binary] Upsert 后 bool[]/Half[] 极值往返正确");
 
         // ── 搜索仍可正常工作 ──
         random = new Random(777);

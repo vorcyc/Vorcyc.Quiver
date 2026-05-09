@@ -3,17 +3,17 @@ using System.Numerics;
 namespace Vorcyc.Quiver.Similarity;
 
 /// <summary>
-/// 切比雪夫距离（L∞ 范数）转相似度：<c>similarity = 1 / (1 + max|xᵢ - yᵢ|)</c>。值域 (0, 1]。
+/// Chebyshev distance (L∞ norm) converted to similarity: <c>similarity = 1 / (1 + max|xᵢ - yᵢ|)</c>. Range (0, 1].
 /// <para>
-/// 仅关注所有维度中最大的绝对差异，忽略其他维度。
-/// 等价于国际象棋中国王从一个格子移动到另一个格子所需的最少步数。
+/// Considers only the largest absolute difference across all dimensions, ignoring all others.
+/// Equivalent to the minimum number of moves a chess king needs to travel from one square to another.
 /// </para>
 /// <para>
-/// <b>适用场景</b>：
+/// <b>Recommended use cases</b>:
 /// <list type="bullet">
-///   <item>需要检测任意单个维度上的最大偏差</item>
-///   <item>质量控制中的特征偏差检测（任一指标超标即报警）</item>
-///   <item>棋盘距离、网格路径规划等离散空间问题</item>
+///   <item>Detecting the maximum deviation across any single dimension.</item>
+///   <item>Feature deviation detection in quality control (alert when any single metric exceeds a threshold).</item>
+///   <item>Chessboard distance, grid path planning, and other discrete-space problems.</item>
 /// </list>
 /// </para>
 /// </summary>

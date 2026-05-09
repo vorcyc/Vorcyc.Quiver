@@ -1,20 +1,21 @@
-using System.Numerics.Tensors;
+using Vorcyc.Quiver.Numerics;
 
 namespace Vorcyc.Quiver.Similarity;
 
 /// <summary>
-/// 点积（内积）相似度：<c>x·y = Σ(xᵢ × yᵢ)</c>。
+/// Dot product (inner product) similarity: <c>x·y = Σ(xᵢ × yᵢ)</c>.
 /// <para>
-/// 值域取决于向量长度和分布。归一化向量的点积等价于余弦相似度。
-/// 也用作 <see cref="DistanceMetric.Cosine"/> 预归一化模式的实际计算函数。
+/// The value range depends on vector magnitudes and distribution. The dot product of normalized
+/// vectors is equivalent to cosine similarity. Also used as the actual compute function for
+/// <see cref="DistanceMetric.Cosine"/> when pre-normalization is enabled.
 /// </para>
 /// <para>
-/// 适合最大内积搜索（MIPS）和已归一化向量的场景。
+/// Well suited for maximum inner-product search (MIPS) and scenarios that operate on pre-normalized vectors.
 /// </para>
 /// </summary>
 public readonly struct DotProductSimilarity : ISimilarity<float>
 {
     /// <inheritdoc />
     public static float Compute(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
-        => TensorPrimitives.Dot(x, y);
+        => VectorMath.Dot(x, y);
 }

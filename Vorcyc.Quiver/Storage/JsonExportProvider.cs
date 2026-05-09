@@ -2,6 +2,7 @@
 
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Vorcyc.Quiver.Migration;
 
 /// <summary>
 /// JSON 格式的存储提供者，实现 <see cref="IStorageProvider"/> 接口。

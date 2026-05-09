@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Xml.Linq;
 using Vorcyc.Quiver;
+using Vorcyc.Quiver.Migration;
 
 namespace Vorcyc.Quiver.Storage;
 

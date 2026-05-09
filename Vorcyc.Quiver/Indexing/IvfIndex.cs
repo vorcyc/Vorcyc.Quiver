@@ -1,4 +1,4 @@
-﻿using System.Numerics.Tensors;
+﻿using Vorcyc.Quiver.Numerics;
 using Vorcyc.Quiver.Similarity;
 
 namespace Vorcyc.Quiver.Indexing;
@@ -242,8 +242,7 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
     ///   <item>Build inverted lists: assign each vector to its nearest cluster</item>
     /// </list>
     /// <para>
-    /// Centroid updates use <see cref="TensorPrimitives.Add"/> and <see cref="TensorPrimitives.Divide"/>
-    /// for SIMD-accelerated vector accumulation and mean computation.
+    /// Centroid updates use the internal vector math helper for vector accumulation and mean computation.
     /// </para>
     /// </summary>
     private void Build()
@@ -292,20 +291,20 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
             for (int c = 0; c < k; c++)
                 sums[c] = new float[dim];
 
-            // Accumulation phase: SIMD-accelerated vector addition via TensorPrimitives.Add
+            // Accumulation phase: vector addition.
             for (int i = 0; i < allVectors.Count; i++)
             {
                 var c = assignments[i];
                 counts[c]++;
-                TensorPrimitives.Add(sums[c], allVectors[i], sums[c]);
+                VectorMath.Add(sums[c], allVectors[i], sums[c]);
             }
 
-            // Divide by member count to get the mean: SIMD-accelerated via TensorPrimitives.Divide
+            // Divide by member count to get the mean.
             for (int c = 0; c < k; c++)
             {
                 // Leave empty clusters' centroids unchanged (avoid division by zero)
                 if (counts[c] == 0) continue;
-                TensorPrimitives.Divide(sums[c], (float)counts[c], _centroids[c]);
+                VectorMath.Divide(sums[c], (float)counts[c], _centroids[c]);
             }
         }
 
@@ -353,7 +352,7 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
     /// </list>
     /// </para>
     /// <para>
-    /// Uses a fixed seed (42) for reproducibility. Distance computation uses <see cref="TensorPrimitives.Distance"/> for SIMD acceleration.
+    /// Uses a fixed seed (42) for reproducibility. Distance computation uses the internal vector math helper.
     /// </para>
     /// </summary>
     /// <param name="vectors">All vector data.</param>
@@ -381,8 +380,7 @@ internal sealed class IvfIndex<TSim> : IVectorIndex
                 float minDist = float.MaxValue;
                 for (int j = 0; j < c; j++)
                 {
-                    // Use TensorPrimitives.Distance for SIMD-accelerated Euclidean distance
-                    var d = TensorPrimitives.Distance(vectors[i], centroids[j]);
+                    var d = VectorMath.Distance(vectors[i], centroids[j]);
                     minDist = Math.Min(minDist, d * d);  // Squared distance (avoid unnecessary sqrt then re-square)
                 }
                 distances[i] = minDist;

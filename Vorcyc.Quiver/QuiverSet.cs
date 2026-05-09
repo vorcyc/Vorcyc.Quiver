@@ -2,62 +2,89 @@ using System.Collections;
 using System.Collections.Frozen;
 using System.Collections.ObjectModel;
 using System.Linq.Expressions;
-using System.Numerics.Tensors;
 using System.Reflection;
 using Vorcyc.Quiver.Indexing;
-using Vorcyc.Quiver.Paging;
+using Vorcyc.Quiver.Numerics;
+using Vorcyc.Quiver.Payloads;
 using Vorcyc.Quiver.Similarity;
 
 namespace Vorcyc.Quiver;
 
 /// <summary>
-/// 记录单个向量字段的元信息，包含维度、距离度量、索引配置、预归一化标志和可空标志。
+/// Metadata for a single vector field: dimensions, distance metric, index configuration,
+/// pre-normalization flag, and nullability flag.
 /// <para>
-/// 由 <see cref="QuiverSet{TEntity}"/> 构造时通过反射扫描 <see cref="QuiverVectorAttribute"/> 自动创建，
-/// 构造后冻结为 <see cref="System.Collections.Frozen.FrozenDictionary{TKey, TValue}"/> 的值，生命周期内不可变。
+/// Created automatically during <see cref="QuiverSet{TEntity}"/> construction by scanning
+/// <see cref="QuiverVectorAttribute"/> via reflection. Frozen into a
+/// <see cref="System.Collections.Frozen.FrozenDictionary{TKey, TValue}"/> after construction;
+/// immutable for the lifetime of the set.
 /// </para>
 /// </summary>
 /// <param name="Dimensions">
-/// 向量维度（固定值）。写入时实际数组长度必须等于此值，否则抛出 <see cref="ArgumentException"/>。
-/// 来源于 <see cref="QuiverVectorAttribute.Dimensions"/>。
+/// Fixed vector dimension. The array length supplied on write must equal this value;
+/// otherwise an <see cref="ArgumentException"/> is thrown.
+/// Sourced from <see cref="QuiverVectorAttribute.Dimensions"/>.
 /// </param>
 /// <param name="Metric">
-/// 距离度量类型，决定相似度计算方式。
-/// 来源于 <see cref="QuiverVectorAttribute.Metric"/>。
+/// Distance metric that determines how similarity is computed.
+/// Sourced from <see cref="QuiverVectorAttribute.Metric"/>.
 /// </param>
 /// <param name="IndexConfig">
-/// 索引配置。为 <c>null</c> 时使用 <see cref="Indexing.FlatIndex{TSim}"/> 暴力搜索。
-/// 来源于属性上的 <see cref="QuiverIndexAttribute"/>（可选标记）。
+/// Index configuration. When <c>null</c>, a <see cref="Indexing.FlatIndex{TSim}"/> brute-force search is used.
+/// Sourced from the optional <see cref="QuiverIndexAttribute"/> on the property.
 /// </param>
 /// <param name="PreNormalize">
-/// 是否在写入和查询时执行 L2 预归一化。
-/// 当 <paramref name="Metric"/> 为 <see cref="DistanceMetric.Cosine"/> 时自动启用，
-/// 使搜索时可用 Dot 替代 CosineSimilarity 以提升性能。
+/// Whether to L2-normalize vectors on write and at query time.
+/// Automatically enabled when <paramref name="Metric"/> is <see cref="DistanceMetric.Cosine"/>,
+/// allowing Dot to be substituted for CosineSimilarity at search time for better performance.
 /// </param>
-/// <param name="Optional">
-/// 是否允许向量值为 <c>null</c>。来源于 <see cref="QuiverVectorAttribute.Optional"/>。
+/// <param name="Nullable">
+/// Whether the vector value may be <c>null</c>. Sourced from <see cref="QuiverVectorAttribute.Nullable"/>.
 /// <para>
-/// 为 <c>true</c> 时，向量为 <c>null</c> 的实体仍可写入但不加入该字段的索引，
-/// 搜索该字段时不会返回这些实体。为 <c>false</c>（默认）时，向量为 <c>null</c> 将抛出 <see cref="ArgumentNullException"/>。
+/// When <c>true</c>, entities with a <c>null</c> vector can still be stored but are not added to
+/// the field's index, so searches on that field will not return them. When <c>false</c> (default),
+/// a <c>null</c> vector throws <see cref="ArgumentNullException"/>.
 /// </para>
+/// </param>
+/// <param name="MemoryMode">
+/// The resolved vector memory mode for this field.
+/// </param>
+/// <param name="EffectiveDimensions">
+/// The actual working dimension after Matryoshka truncation. Equals <paramref name="Dimensions"/>
+/// when no truncation is applied. Indexing, similarity computation, mmap row layout, and lazy
+/// materialization all use this dimension.
+/// </param>
+/// <param name="Quantization">
+/// Storage quantization mode for this field. <see cref="VectorQuantization.None"/> means native
+/// float32; <see cref="VectorQuantization.Sq8"/> means SQ8-encoded persistence and mmap while
+/// indexing and search still operate on a float32 view.
 /// </param>
 internal record QuiverFieldInfo(
     int Dimensions,
     DistanceMetric Metric,
     QuiverIndexAttribute? IndexConfig,
     bool PreNormalize,
-    bool Optional);
+    bool Nullable,
+    VectorMemoryMode MemoryMode,
+    int EffectiveDimensions,
+    VectorQuantization Quantization,
+    Vorcyc.Quiver.Indexing.VectorElementType ElementType = Vorcyc.Quiver.Indexing.VectorElementType.Float32);
+
+internal record QuiverLargeFieldInfo(
+    bool Nullable,
+    LargeFieldMemoryMode MemoryMode);
 
 
 /// <summary>
-/// 向量集合，提供实体的 CRUD 操作和向量相似度搜索。
+/// A typed vector set that provides CRUD operations and vector similarity search for entities.
 /// <para>
-/// <b>线程安全</b>：内部使用 <see cref="ReaderWriterLockSlim"/> 实现读写分离锁，
-/// 多个搜索操作可并行执行，写操作互斥。
+/// <b>Thread safety</b>: Uses <see cref="ReaderWriterLockSlim"/> for read-write separation.
+/// Multiple search operations can run concurrently; write operations are mutually exclusive.
 /// </para>
 /// <para>
-/// <b>异步支持</b>：所有可能耗时的操作（搜索、批量写入）均提供 <c>Async</c> 后缀重载，
-/// 通过 <see cref="Task.Run(Action)"/> 将 CPU 密集计算卸载到线程池，避免阻塞调用方线程（如 UI 线程）。
+/// <b>Async support</b>: All potentially long-running operations (search, bulk writes) have
+/// <c>Async</c> overloads that offload CPU-intensive work to the thread pool via
+/// <see cref="Task.Run(Action)"/>, avoiding blocking the calling thread (e.g. the UI thread).
 /// </para>
 /// </summary>
 /// <typeparam name="TEntity">
@@ -74,18 +101,14 @@ internal record QuiverFieldInfo(
 /// var results = set.Search(e => e.Embedding, queryVector, topK: 5);
 /// </code>
 /// </example>
-public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> where TEntity : class, new()
+public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity>, Vorcyc.Quiver.Runtime.ILazyVectorSource, Vorcyc.Quiver.Runtime.ILazyLargeFieldSource where TEntity : class, new()
 {
     // ──────────────────────────────────────────────────────────────
     // Storage layer: bidirectional mapping of internal ID → entity; internal IDs are auto-incremented by _nextId
     // ──────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Entity cache. In <see cref="EntityCacheMode.FullMemory"/> mode this is a pass-through dictionary;
-    /// in <see cref="EntityCacheMode.LazyPaging"/> mode it is an LRU paged cache.
-    /// The external interface is identical to <c>Dictionary&lt;int, TEntity&gt;</c> in both modes.
-    /// </summary>
-    private readonly EntityPageCache<TEntity> _entities;
+    /// <summary>Internal ID → entity mapping. Entities are ordinary in-memory records.</summary>
+    private readonly InMemoryEntityStore<TEntity> _entities;
 
     /// <summary>User primary key → internal ID mapping; supports O(1) deduplication and lookup.</summary>
     private readonly Dictionary<object, int> _keyToId = [];
@@ -103,14 +126,26 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     /// <summary>Vector field name → field metadata (dimensions, metric, index config). Frozen after construction.</summary>
     private readonly FrozenDictionary<string, QuiverFieldInfo> _vectorFields;
 
-    /// <summary>Vector field name → compiled vector property accessor. Frozen after construction.</summary>
-    private readonly FrozenDictionary<string, Func<TEntity, float[]?>> _vectorGetters;
+    /// <summary>Vector field name → compiled vector property accessor. Frozen after construction.
+    /// 返回基类 <see cref="Array"/>：Float32 字段为 <c>float[]</c>，Float16 字段为 <c>Half[]</c>。</summary>
+    private readonly FrozenDictionary<string, Func<TEntity, Array?>> _vectorGetters;
 
     /// <summary>Vector field name → corresponding vector index instance. Frozen after construction.</summary>
     private readonly FrozenDictionary<string, IVectorIndex> _indices;
 
     /// <summary>Vector field name → vector data store instance. Frozen after construction.</summary>
     private readonly FrozenDictionary<string, IVectorStore> _vectorStores;
+
+    private readonly FrozenDictionary<string, QuiverLargeFieldInfo> _largeFields;
+
+    private readonly LargeFieldStore? _largeFieldStore;
+
+    /// <summary>
+    /// Injected by <see cref="QuiverDbContext"/> after construction. Used to signal heap-vector byte
+    /// budget overflows back to the context, which then performs a single-flight Heap → Mmap promotion.
+    /// May be <c>null</c> for standalone sets not managed by a context (no promotion is triggered).
+    /// </summary>
+    private IPromotionCoordinator? _promotionCoordinator;
 
     /// <summary>
     /// Cached default field info when the entity has exactly one vector field, avoiding a call to _vectorFields.First() on every search.
@@ -137,24 +172,35 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     private int _disposed;
 
     /// <summary>
+    /// Tombstoned internal-row ids accumulated since the last persist.
+    /// Populated by <see cref="QuiverSet{TEntity}.RemoveCore"/>; consumed and cleared by
+    /// <see cref="QuiverDbContext.AppendAsync"/> (writes a <c>SegmentKind.Tombstone</c> segment)
+    /// or <see cref="QuiverDbContext.SaveAsync"/> (which physically rewrites the file).
+    /// Access must be guarded by the write lock.
+    /// </summary>
+    private readonly List<int> _pendingTombstones = new();
+
+    /// <summary>
     /// Initializes the vector collection. Scans properties of <typeparamref name="TEntity"/> via reflection
     /// to auto-discover the primary key and vector fields, compiles property accessors, and creates
     /// the corresponding index and vector store instances for each vector field.
     /// </summary>
     /// <param name="databasePath">
-    /// Database path. Used to derive the page file directory in <see cref="EntityCacheMode.LazyPaging"/> mode.
+    /// Database path.
     /// </param>
-    /// <param name="entityCache">In-memory cache strategy for entity objects.</param>
-    /// <param name="maxCachedPages">Maximum number of pages kept in memory in lazy-loading mode.</param>
-    /// <param name="pageSize">Number of entities per page in lazy-loading mode.</param>
+    /// <param name="largeFieldMemoryMode">Memory strategy for large fields.</param>
+    /// <param name="vectorMemoryMode">Global memory strategy for vector payloads.</param>
+    /// <param name="vectorMemoryMapThresholdBytes">File-size threshold used by <see cref="GlobalVectorMemoryMode.Auto"/>.</param>
+    /// <param name="largeFieldMaxCachedPayloads">Maximum number of cached large-field payloads in paged-cache mode.</param>
     /// <exception cref="InvalidOperationException">
     /// The entity type is missing a <see cref="QuiverKeyAttribute"/> primary key, or has no <see cref="QuiverVectorAttribute"/> vector fields.
     /// </exception>
     internal QuiverSet(
         string? databasePath = null,
-        EntityCacheMode entityCache = EntityCacheMode.FullMemory,
-        int maxCachedPages = 16,
-        int pageSize = 512)
+        GlobalLargeFieldMemoryMode largeFieldMemoryMode = GlobalLargeFieldMemoryMode.InMemory,
+        GlobalVectorMemoryMode vectorMemoryMode = GlobalVectorMemoryMode.InMemory,
+        long vectorMemoryMapThresholdBytes = 256L * 1024 * 1024,
+        int largeFieldMaxCachedPayloads = 128)
     {
         var type = typeof(TEntity);
 
@@ -165,33 +211,141 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
         _getKey = CompileGetter<object?>(keyProp);
 
+        // ── Discover and validate [QuiverLargeField] large-field properties ──
+        // 仅做类型校验：实际的 Blob 段写入/读取在 BinaryStorageProvider 中通过属性反射完成，
+        // 无需在 QuiverSet 上维护额外的字典（与向量不同，blob 字段没有索引/store 概念）。
+        var largeFields = new Dictionary<string, QuiverLargeFieldInfo>(StringComparer.Ordinal);
+        foreach (var bp in type.GetProperties())
+        {
+            var largeFieldAttr = bp.GetCustomAttribute<QuiverLargeFieldAttribute>();
+            if (largeFieldAttr is null) continue;
+            if (bp.PropertyType != typeof(byte[]))
+                throw new InvalidOperationException(
+                    $"[QuiverLargeField] property '{bp.Name}' on {type.Name} must be of type byte[].");
+            if (bp.GetCustomAttribute<QuiverVectorAttribute>() != null)
+                throw new InvalidOperationException(
+                    $"Property '{bp.Name}' on {type.Name} cannot have both [QuiverLargeField] and [QuiverVector].");
+
+            var fieldMode = ResolveLargeFieldMemoryMode(largeFieldMemoryMode, largeFieldAttr.MemoryMode);
+            if (fieldMode != LargeFieldMemoryMode.InMemory)
+                ValidateLazyLargeFieldAccessor(type, bp, fieldMode);
+            largeFields[bp.Name] = new QuiverLargeFieldInfo(largeFieldAttr.Nullable, fieldMode);
+        }
+        _largeFields = largeFields.ToFrozenDictionary(StringComparer.Ordinal);
+        _largeFieldStore = _largeFields.Values.Any(f => f.MemoryMode == LargeFieldMemoryMode.PagedCache)
+            ? new LargeFieldStore(cacheEnabled: true, largeFieldMaxCachedPayloads)
+            : _largeFields.Values.Any(f => f.MemoryMode == LargeFieldMemoryMode.LazyLoad)
+                ? new LargeFieldStore(cacheEnabled: false)
+                : null;
+
         // ── Discover and register all vector fields ──
         var vectorProps = type.GetProperties()
-            .Where(p => p.GetCustomAttribute<QuiverVectorAttribute>() != null);
+            .Where(p => p.GetCustomAttribute<QuiverVectorAttribute>() != null)
+            .ToList();
+
+        // ── Resolve GlobalVectorMemoryMode.Auto ──
+        // Auto 语义（按阈值切换）：
+        //   1. DatabasePath 必须已配置；
+        //   2. 目标文件已存在 且 文件长度 ≥ vectorMemoryMapThresholdBytes 时启用 MemoryMapped，
+        //      否则继续使用 InMemory（追求最低延迟）。
+        // 这里以"文件总字节数"作为"向量负载体积"的近似代理：v4 文件绝大部分体积都是 VectorBlob 段，
+        // 选用文件长度避免了构造期就 open/parse 整个 footer，且对首次空库友好（默认 Heap）。
+        // 数据增长到阈值后，下一次打开数据库会自动切换到 Mmap。
+        var globalVectorMode = vectorMemoryMode;
+        if (globalVectorMode == GlobalVectorMemoryMode.Auto)
+        {
+            long fileBytes = 0;
+            if (!string.IsNullOrEmpty(databasePath) && File.Exists(databasePath))
+            {
+                try { fileBytes = new FileInfo(databasePath).Length; }
+                catch { fileBytes = 0; }
+            }
+
+            globalVectorMode = (!string.IsNullOrEmpty(databasePath)
+                                && fileBytes >= vectorMemoryMapThresholdBytes)
+                ? GlobalVectorMemoryMode.MemoryMapped
+                : GlobalVectorMemoryMode.InMemory;
+        }
 
         var vectorFields = new Dictionary<string, QuiverFieldInfo>();
-        var vectorGetters = new Dictionary<string, Func<TEntity, float[]?>>();
+        var vectorGetters = new Dictionary<string, Func<TEntity, Array?>>();
         var vectorStores = new Dictionary<string, IVectorStore>();
         var indices = new Dictionary<string, IVectorIndex>();
 
         foreach (var prop in vectorProps)
         {
-            if (prop.PropertyType != typeof(float[]))
+            // 支持两种向量元素类型：float[]（fp32，默认）与 Half[]（fp16，内存/磁盘减半）。
+            // 其它类型（如 double[]）暂不支持。
+            Indexing.VectorElementType elementType;
+            if (prop.PropertyType == typeof(float[]))
+                elementType = Indexing.VectorElementType.Float32;
+            else if (prop.PropertyType == typeof(Half[]))
+                elementType = Indexing.VectorElementType.Float16;
+            else
                 throw new InvalidOperationException(
-                    $"[QuiverVector] property '{prop.Name}' on {type.Name} must be of type float[].");
+                    $"[QuiverVector] property '{prop.Name}' on {type.Name} must be of type float[] or Half[].");
 
             var vectorAttr = prop.GetCustomAttribute<QuiverVectorAttribute>()!;
             var indexAttr = prop.GetCustomAttribute<QuiverIndexAttribute>();
             var metric = vectorAttr.Metric;
             var preNormalize = vectorAttr.CustomSimilarity is null && metric == DistanceMetric.Cosine;
+            var fieldMemoryMode = ResolveVectorFieldMemoryMode(globalVectorMode, vectorAttr.MemoryMode);
+
+            if (fieldMemoryMode == VectorMemoryMode.MemoryMapped && string.IsNullOrEmpty(databasePath))
+                throw new InvalidOperationException(
+                    $"[QuiverVector] property '{prop.Name}' on {type.Name}: {nameof(VectorMemoryMode.MemoryMapped)} " +
+                    $"requires a valid database path.");
+
+            if (fieldMemoryMode != VectorMemoryMode.InMemory)
+                ValidateLazyVectorAccessor(type, prop, fieldMemoryMode);
+
+            // ── Matryoshka 有效维度校验 ──
+            var declaredDim = vectorAttr.Dimensions;
+            var effectiveDim = vectorAttr.EffectiveDimensions;
+            if (effectiveDim <= 0 || effectiveDim >= declaredDim)
+            {
+                effectiveDim = declaredDim; // 0 / 越界 / 等同 ⇒ 不截断
+            }
+            else if (effectiveDim < 1)
+            {
+                throw new InvalidOperationException(
+                    $"[QuiverVector] property '{prop.Name}' on {type.Name}: EffectiveDimensions must be ≥ 1.");
+            }
+
+            // ── 量化与度量兼容性校验 ──
+            var quantization = vectorAttr.Quantization;
+            if (quantization == VectorQuantization.Sq8 && metric == DistanceMetric.Hamming)
+            {
+                throw new InvalidOperationException(
+                    $"[QuiverVector] property '{prop.Name}' on {type.Name}: VectorQuantization.Sq8 is not compatible with DistanceMetric.Hamming.");
+            }
+            // Half[] 字段已经是 fp16 物理压缩，与 SQ8 标量量化互斥（两者都作用于物理存储精度）。
+            if (quantization == VectorQuantization.Sq8 && elementType == Indexing.VectorElementType.Float16)
+            {
+                throw new InvalidOperationException(
+                    $"[QuiverVector] property '{prop.Name}' on {type.Name}: VectorQuantization.Sq8 is not compatible with Half[] fields (fp16 storage already halves memory).");
+            }
 
             vectorFields[prop.Name] = new QuiverFieldInfo(
-                vectorAttr.Dimensions, metric, indexAttr, preNormalize, vectorAttr.Optional);
+                declaredDim, metric, indexAttr, preNormalize, vectorAttr.Nullable, fieldMemoryMode,
+                effectiveDim, quantization, elementType);
 
-            vectorGetters[prop.Name] = CompileGetter<float[]?>(prop);
+            // getter 返回基类 Array：float[] 字段返回 float[]，Half[] 字段返回 Half[]，
+            // 由 PrepareVectors 按 QuiverFieldInfo.ElementType 分派具体写入路径。
+            vectorGetters[prop.Name] = CompileGetter<Array?>(prop);
 
             // ── Create the corresponding IVectorStore for each vector field ──
-            var store = new HeapVectorStore();
+            // schema v2 + VectorMemoryMode.MemoryMapped：构造时即生成 Mmap 存储；具体 mmap 区域在 LoadAsync 后由
+            // BinaryStorageProvider 回填（未绑定时仅 overflow 生效，行为等同 Heap）。
+            // 用 VectorStoreSlot 包一层，让运行时 Heap → Mmap 升级时索引看到的引用不变。
+            // Half[] 字段在 InMemory 模式使用 HalfHeapVectorStore（物理 fp16，读时 widen 到 float 视图）。
+            IVectorStore inner = (fieldMemoryMode, elementType) switch
+            {
+                (VectorMemoryMode.MemoryMapped, _) => new MmapVectorStore(effectiveDim),
+                (_, Indexing.VectorElementType.Float16) => new HalfHeapVectorStore(effectiveDim),
+                _                                  => new HeapVectorStore(effectiveDim),
+            };
+            var store = new VectorStoreSlot(inner);
             vectorStores[prop.Name] = store;
 
             // ── Create the corresponding vector index instance (generic helper eliminates the metric×index Cartesian product) ──
@@ -232,16 +386,8 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             _defaultField = (first.Key, first.Value);
         }
 
-        // ── Initialize entity cache (FullMemory or LazyPaging) ──
-        if (entityCache == EntityCacheMode.LazyPaging && !string.IsNullOrEmpty(databasePath))
-        {
-            var pageDir = Path.Combine(databasePath + ".pages", typeof(TEntity).Name);
-            _entities = new EntityPageCache<TEntity>(pageDir, maxCachedPages, pageSize);
-        }
-        else
-        {
-            _entities = new EntityPageCache<TEntity>();
-        }
+        // ── Initialize entity container ──
+        _entities = new InMemoryEntityStore<TEntity>();
     }
 
     /// <summary>Current number of stored entities. Thread-safe (read lock).</summary>
@@ -255,11 +401,6 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             finally { _lock.ExitReadLock(); }
         }
     }
-
-    /// <summary>
-    /// Whether the collection is running in lazy-paging cache mode (<see cref="EntityCacheMode.LazyPaging"/>).
-    /// </summary>
-    public bool IsLazyLoading => _entities.IsLazy;
 
     /// <summary>
     /// Read-only mapping of all vector field names to their dimensions.
@@ -311,40 +452,6 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
     #endregion
 
-    #region Memory compaction
-
-    /// <summary>
-    /// Flushes all dirty pages to disk and evicts all loaded pages from memory, minimizing the memory footprint.
-    /// Pages are reloaded from disk transparently on next access.
-    /// <para>
-    /// No-op in <see cref="EntityCacheMode.FullMemory"/> mode.
-    /// Vector index structures (HNSW/IVF/KDTree etc.) are not affected and always remain in memory.
-    /// </para>
-    /// </summary>
-    public void CompactMemory()
-    {
-        ThrowIfDisposed();
-        _lock.EnterWriteLock();
-        try { _entities.CompactMemory(); }
-        finally { _lock.ExitWriteLock(); }
-    }
-
-    /// <summary>
-    /// Asynchronously flushes all dirty pages to disk and evicts all loaded pages from memory.
-    /// Offloads the work to a thread-pool thread to avoid blocking the caller (e.g. UI thread).
-    /// <para>
-    /// No-op in <see cref="EntityCacheMode.FullMemory"/> mode.
-    /// Vector index structures are not affected.
-    /// </para>
-    /// </summary>
-    public Task CompactMemoryAsync()
-    {
-        ThrowIfDisposed();
-        return Task.Run(CompactMemory);
-    }
-
-    #endregion
-
     #region Internal utility methods
 
     /// <summary>
@@ -367,6 +474,22 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     /// <exception cref="ArgumentException">The expression is not a property access, or the property is not marked with <see cref="QuiverVectorAttribute"/>.</exception>
     private (string Name, QuiverFieldInfo Field) ResolveField(
         Expression<Func<TEntity, float[]>> vectorSelector)
+    {
+        var memberExpr = vectorSelector.Body as MemberExpression
+            ?? throw new ArgumentException("vectorSelector must be a simple property access expression.");
+
+        var propName = memberExpr.Member.Name;
+        return _vectorFields.TryGetValue(propName, out var field)
+            ? (propName, field)
+            : throw new ArgumentException($"Property '{propName}' is not marked with [QuiverVector] attribute.");
+    }
+
+    /// <summary>
+    /// The <c>Half[]</c> selector variant of <see cref="ResolveField(Expression{Func{TEntity, float[]}})"/>,
+    /// used by query overloads targeting fp16 vector fields.
+    /// </summary>
+    private (string Name, QuiverFieldInfo Field) ResolveField(
+        Expression<Func<TEntity, Half[]>> vectorSelector)
     {
         var memberExpr = vectorSelector.Body as MemberExpression
             ?? throw new ArgumentException("vectorSelector must be a simple property access expression.");
@@ -404,7 +527,7 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
     /// <summary>
     /// Performs L2 normalization on <paramref name="source"/> and returns a new array; the original array is unchanged.
-    /// Delegates internally to <see cref="NormalizeVector"/>, using <see cref="TensorPrimitives"/> SIMD acceleration.
+    /// Delegates internally to <see cref="NormalizeVector"/>.
     /// </summary>
     /// <param name="source">The raw vector data.</param>
     /// <returns>A new normalized <c>float[]</c> with the same length as <paramref name="source"/>.</returns>
@@ -417,17 +540,87 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
 
     /// <summary>
     /// L2 normalization: <c>destination[i] = source[i] / ‖source‖₂</c>.
-    /// Computes the L2 norm via <see cref="TensorPrimitives.Norm"/> (SIMD-accelerated),
-    /// then applies vectorized division via <see cref="TensorPrimitives.Divide{T}(ReadOnlySpan{T}, T, Span{T})"/>.
+    /// Computes the L2 norm and then divides each component by that norm.
     /// Zero vectors (norm = 0) clear the destination array to avoid NaN.
     /// </summary>
     private static void NormalizeVector(ReadOnlySpan<float> source, Span<float> destination)
     {
-        var norm = TensorPrimitives.Norm(source);
+        var norm = VectorMath.Norm(source);
         if (norm > 0f)
-            TensorPrimitives.Divide(source, norm, destination);
+            VectorMath.Divide(source, norm, destination);
         else
             destination.Clear();
+    }
+
+    /// <summary>
+    /// In-place L2 normalization for <c>Half[]</c>: widens to float, normalizes, then narrows back to fp16.
+    /// Zero vectors are cleared to avoid NaN.
+    /// </summary>
+    private static void NormalizeHalfInPlace(Half[] vector)
+    {
+        var f = new float[vector.Length];
+        VectorMath.WidenHalfToFloat(vector, f);
+        NormalizeVector(f, f);
+        VectorMath.NarrowFloatToHalf(f, vector);
+    }
+
+    private static VectorMemoryMode ResolveVectorFieldMemoryMode(
+        GlobalVectorMemoryMode globalMode,
+        VectorMemoryMode fieldMode)
+        => globalMode switch
+        {
+            GlobalVectorMemoryMode.InMemory => VectorMemoryMode.InMemory,
+            GlobalVectorMemoryMode.LazyLoad => VectorMemoryMode.LazyLoad,
+            GlobalVectorMemoryMode.MemoryMapped => VectorMemoryMode.MemoryMapped,
+            GlobalVectorMemoryMode.Auto => VectorMemoryMode.InMemory,
+            GlobalVectorMemoryMode.PerField => fieldMode,
+            _ => VectorMemoryMode.InMemory
+        };
+
+    private static LargeFieldMemoryMode ResolveLargeFieldMemoryMode(
+        GlobalLargeFieldMemoryMode globalMode,
+        LargeFieldMemoryMode fieldMode)
+        => globalMode switch
+        {
+            GlobalLargeFieldMemoryMode.InMemory => LargeFieldMemoryMode.InMemory,
+            GlobalLargeFieldMemoryMode.LazyLoad => LargeFieldMemoryMode.LazyLoad,
+            GlobalLargeFieldMemoryMode.PagedCache => LargeFieldMemoryMode.PagedCache,
+            GlobalLargeFieldMemoryMode.PerField => fieldMode,
+            _ => LargeFieldMemoryMode.InMemory
+        };
+
+    private static void ValidateLazyVectorAccessor(
+        Type entityType,
+        PropertyInfo prop,
+        VectorMemoryMode memoryMode)
+    {
+        if (prop.GetMethod is null || prop.SetMethod is null)
+            throw new InvalidOperationException(
+                $"[QuiverVector] property '{prop.Name}' on {entityType.Name} must have both getter and setter when " +
+                $"{nameof(VectorMemoryMode)}.{memoryMode} is used.");
+
+        var backing = entityType.GetField("__" + prop.Name + "_backing", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (backing is null || backing.FieldType != typeof(float[]))
+            throw new InvalidOperationException(
+                $"[QuiverVector] property '{prop.Name}' on {entityType.Name} uses {nameof(VectorMemoryMode)}.{memoryMode}. " +
+                $"Declare it as 'public partial float[]? {prop.Name} {{ get; set; }}' in a partial type so the Quiver source generator can create the lazy accessor.");
+    }
+
+    private static void ValidateLazyLargeFieldAccessor(
+        Type entityType,
+        PropertyInfo prop,
+        LargeFieldMemoryMode memoryMode)
+    {
+        if (prop.GetMethod is null || prop.SetMethod is null)
+            throw new InvalidOperationException(
+                $"[QuiverLargeField] property '{prop.Name}' on {entityType.Name} must have both getter and setter when " +
+                $"{nameof(LargeFieldMemoryMode)}.{memoryMode} is used.");
+
+        var backing = entityType.GetField("__" + prop.Name + "_backing", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (backing is null || backing.FieldType != typeof(byte[]))
+            throw new InvalidOperationException(
+                $"[QuiverLargeField] property '{prop.Name}' on {entityType.Name} uses {nameof(LargeFieldMemoryMode)}.{memoryMode}. " +
+                $"Declare it as 'public partial byte[]? {prop.Name} {{ get; set; }}' in a partial type so the Quiver source generator can create the lazy accessor.");
     }
 
     /// <summary>
@@ -471,20 +664,13 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
     #region Dispose
 
     /// <summary>
-    /// Releases all resources: flushes dirty pages, disposes vector stores, index instances, and the read-write lock.
-    /// <para>
-    /// In <see cref="EntityCacheMode.LazyPaging"/> mode, dirty pages are written back to disk
-    /// before releasing <see cref="EntityPageCache{TEntity}"/>.
-    /// </para>
+    /// Releases all resources: disposes vector stores, index instances, and the read-write lock.
     /// Uses <see cref="Interlocked.Exchange"/> to ensure the release logic executes only once on concurrent calls.
     /// </summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-
-        // Lazy-loading mode: flush all dirty pages to disk
-        _entities.Dispose();
 
         foreach (var store in _vectorStores.Values)
             store.Dispose();
@@ -494,6 +680,8 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity> wher
             if (index is IDisposable disposable)
                 disposable.Dispose();
         }
+
+        _largeFieldStore?.Dispose();
 
         _lock.Dispose();
         GC.SuppressFinalize(this);

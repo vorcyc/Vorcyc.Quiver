@@ -1,5 +1,7 @@
 ﻿namespace Vorcyc.Quiver.Storage;
 
+using Vorcyc.Quiver.Migration;
+
 /// <summary>
 /// 导出/导入存储提供者接口，定义可读格式（JSON、XML）的序列化契约。
 /// <para>

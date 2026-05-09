@@ -3,23 +3,24 @@ using System.Numerics;
 namespace Vorcyc.Quiver.Similarity;
 
 /// <summary>
-/// 汉明相似度：<c>similarity = 1 - (不等元素数 / 总维度)</c>。值域 [0, 1]。
+/// Hamming similarity: <c>similarity = 1 - (number of differing elements / total dimensions)</c>. Range [0, 1].
 /// <para>
-/// 比较两个向量中对应位置值不相等的元素比例。
-/// 完全相同时为 1，所有元素都不同时为 0。
+/// Measures the proportion of corresponding positions at which the two vectors differ.
+/// Returns 1 when the vectors are identical and 0 when every element differs.
 /// </para>
 /// <para>
-/// <b>适用场景</b>：
+/// <b>Recommended use cases</b>:
 /// <list type="bullet">
-///   <item>二值化向量（0/1）的位级比较</item>
-///   <item>局部敏感哈希（LSH）生成的二进制哈希码比对</item>
-///   <item>SimHash / MinHash 等文本指纹的快速近似匹配</item>
-///   <item>量化向量（值域有限离散集）的比较</item>
+///   <item>Bit-level comparison of binary (0/1) vectors.</item>
+///   <item>Comparing binary hash codes produced by locality-sensitive hashing (LSH).</item>
+///   <item>Fast approximate matching of text fingerprints such as SimHash and MinHash.</item>
+///   <item>Comparison of quantized vectors with a finite discrete value set.</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>注意</b>：本实现使用精确浮点比较（<c>==</c>）。
-/// 对于连续浮点向量，大多数元素几乎不会完全相等，建议仅用于二值化或量化后的向量。
+/// <b>Note</b>: this implementation uses exact floating-point equality (<c>==</c>).
+/// For continuous floating-point vectors most elements will almost never be exactly equal;
+/// use only with binarized or quantized vectors.
 /// </para>
 /// </summary>
 public readonly struct HammingSimilarity : ISimilarity<float>

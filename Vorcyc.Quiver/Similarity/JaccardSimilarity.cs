@@ -3,22 +3,23 @@ using System.Numerics;
 namespace Vorcyc.Quiver.Similarity;
 
 /// <summary>
-/// 广义 Jaccard 相似度：<c>similarity = Σ min(xᵢ, yᵢ) / Σ max(xᵢ, yᵢ)</c>。值域 [0, 1]。
+/// Generalized Jaccard similarity: <c>similarity = Σ min(xᵢ, yᵢ) / Σ max(xᵢ, yᵢ)</c>. Range [0, 1].
 /// <para>
-/// 经典 Jaccard 系数的连续值扩展（也称 Ruzicka 相似度）。
-/// 当向量为二值（0/1）时退化为标准的集合 Jaccard 系数 <c>|A∩B| / |A∪B|</c>。
+/// A continuous-value extension of the classical Jaccard coefficient (also known as Ruzicka similarity).
+/// Reduces to the standard set Jaccard coefficient <c>|A∩B| / |A∪B|</c> when vectors are binary (0/1).
 /// </para>
 /// <para>
-/// <b>适用场景</b>：
+/// <b>Recommended use cases</b>:
 /// <list type="bullet">
-///   <item>BoW（词袋）/ TF-IDF 等稀疏非负文本特征的文档相似度</item>
-///   <item>二值化特征向量的集合重叠度量</item>
-///   <item>生态学中物种丰度数据的群落相似度</item>
-///   <item>直方图特征（颜色直方图、梯度直方图）的比较</item>
+///   <item>Document similarity with sparse non-negative text features such as BoW and TF-IDF.</item>
+///   <item>Set overlap measurement for binary feature vectors.</item>
+///   <item>Community similarity for species abundance data in ecology.</item>
+///   <item>Comparison of histogram features (color histograms, gradient histograms).</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>注意</b>：要求向量元素为非负值。负值元素的 min/max 行为可能产生非预期结果。
+/// <b>Note</b>: requires non-negative vector elements. Negative elements may produce unexpected
+/// results due to min/max behavior.
 /// </para>
 /// </summary>
 public readonly struct JaccardSimilarity : ISimilarity<float>

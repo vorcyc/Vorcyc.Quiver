@@ -20,6 +20,12 @@
 
 ---
 
+## Motivation
+
+Quiver grew out of the limitations of its predecessor, `Vorcyc.AwesomeAI.Ash`: a fixed table structure, brute-force-only search, and no concurrency support — none of which were acceptable for production-grade vector retrieval. Inspired by EF Core's Code-First philosophy and Python's Annoy library, Quiver was redesigned from scratch around declarative modeling, multiple ANN index algorithms, and built-in concurrency safety. See [Product Overview · Creation Overview](https://github.com/vorcyc/Vorcyc.Quiver/wiki/02-Product-Overview) for the full story.
+
+---
+
 ## What is Quiver?
 
 **Quiver** is a pure .NET embedded vector database with zero native dependencies, running as an in-process library without requiring a standalone database server. It draws on EF Core's `DbContext` design pattern — annotate entity classes with attributes such as `[QuiverKey]`, `[QuiverVector]`, `[QuiverLargeField]`, and `[QuiverIndex]`, and the framework automatically handles model discovery, index construction, and persistence at runtime.

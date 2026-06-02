@@ -20,6 +20,12 @@
 
 ---
 
+## 设计动机
+
+Quiver 诞生于对前身 `Vorcyc.AwesomeAI.Ash` 类的深度反思：Ash 表结构固定、只能暴力搜索、不支持并发，无法满足生产级向量检索的需求。借鉴 EF Core 的 Code-First 理念和 Python Annoy 的 ANN 启发，Quiver 以声明式建模、多种 ANN 索引算法和内置并发安全为核心目标重新设计。详见[产品简介 · 创作梗概](https://github.com/vorcyc/Vorcyc.Quiver/wiki/02-Product-Overview_zh)。
+
+---
+
 ## Quiver 是什么？
 
 **Quiver** 是一款纯 .NET 实现的嵌入式向量数据库，无任何原生依赖，以进程内库的形式运行，无需独立部署数据库服务器。它借鉴 EF Core 的 `DbContext` 设计模式——使用 `[QuiverKey]`、`[QuiverVector]`、`[QuiverLargeField]`、`[QuiverIndex]` 等声明式特性标注实体类，框架在运行时自动完成模型发现、索引构建和持久化管理。

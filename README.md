@@ -195,30 +195,30 @@ sequenceDiagram
 
 ## Documentation
 
-Full chapter documentation is available in the [English Wiki](wiki_en/Home.md):
+Full chapter documentation is available in the [English Wiki](https://github.com/vorcyc/Vorcyc.Quiver/wiki/Home.md):
 
 | # | Chapter |
 |---|---|
-| 01 | [Release Notes](wiki_en/01-Release-Notes.md) |
-| 02 | [Product Overview](wiki_en/02-Product-Overview.md) |
-| 03 | [Architecture Overview](wiki_en/03-Architecture.md) |
-| 04 | [Quick Start](wiki_en/04-Quick-Start.md) |
-| 05 | [Core Concepts](wiki_en/05-Core-Concepts.md) |
-| 06 | [Distance Metrics](wiki_en/06-Distance-Metrics.md) |
-| 07 | [Index Types](wiki_en/07-Index-Types.md) |
-| 08 | [CRUD Operations](wiki_en/08-CRUD.md) |
-| 09 | [Vector Search](wiki_en/09-Vector-Search.md) |
-| 10 | [Persistent Storage](wiki_en/10-Persistence.md) |
-| 11 | [Migration System](wiki_en/11-Migration-System.md) |
-| 11a | [Schema Migration](wiki_en/11-Schema-Migration.md) |
-| 12 | [Multi-Vector Field Support](wiki_en/12-Multi-Vector-Fields.md) |
-| 13 | [Thread Safety and Concurrency](wiki_en/13-Thread-Safety.md) |
-| 14 | [Lifecycle Management](wiki_en/14-Lifecycle.md) |
-| 15 | [Configuration Options](wiki_en/15-Configuration.md) |
-| 16 | [Internal Implementation Details](wiki_en/16-Internal-Implementation.md) |
-| 17 | [Complete Examples](wiki_en/17-Examples.md) |
-| 18 | [API Reference Cheat Sheet](wiki_en/18-API-Reference.md) |
-| 19 | [Usage Recommendations](wiki_en/19-Usage-Recommendations.md) |
+| 01 | [Release Notes](https://github.com/vorcyc/Vorcyc.Quiver/wiki/01-Release-Notes.md) |
+| 02 | [Product Overview](https://github.com/vorcyc/Vorcyc.Quiver/wiki/02-Product-Overview.md) |
+| 03 | [Architecture Overview](https://github.com/vorcyc/Vorcyc.Quiver/wiki/03-Architecture.md) |
+| 04 | [Quick Start](https://github.com/vorcyc/Vorcyc.Quiver/wiki/04-Quick-Start.md) |
+| 05 | [Core Concepts](https://github.com/vorcyc/Vorcyc.Quiver/wiki/05-Core-Concepts.md) |
+| 06 | [Distance Metrics](https://github.com/vorcyc/Vorcyc.Quiver/wiki/06-Distance-Metrics.md) |
+| 07 | [Index Types](https://github.com/vorcyc/Vorcyc.Quiver/wiki/07-Index-Types.md) |
+| 08 | [CRUD Operations](https://github.com/vorcyc/Vorcyc.Quiver/wiki/08-CRUD.md) |
+| 09 | [Vector Search](https://github.com/vorcyc/Vorcyc.Quiver/wiki/09-Vector-Search.md) |
+| 10 | [Persistent Storage](https://github.com/vorcyc/Vorcyc.Quiver/wiki/10-Persistence.md) |
+| 11 | [Migration System](https://github.com/vorcyc/Vorcyc.Quiver/wiki/11-Migration-System.md) |
+| 11a | [Schema Migration](https://github.com/vorcyc/Vorcyc.Quiver/wiki/11-Schema-Migration.md) |
+| 12 | [Multi-Vector Field Support](https://github.com/vorcyc/Vorcyc.Quiver/wiki/12-Multi-Vector-Fields.md) |
+| 13 | [Thread Safety and Concurrency](https://github.com/vorcyc/Vorcyc.Quiver/wiki/13-Thread-Safety.md) |
+| 14 | [Lifecycle Management](https://github.com/vorcyc/Vorcyc.Quiver/wiki/14-Lifecycle.md) |
+| 15 | [Configuration Options](https://github.com/vorcyc/Vorcyc.Quiver/wiki/15-Configuration.md) |
+| 16 | [Internal Implementation Details](https://github.com/vorcyc/Vorcyc.Quiver/wiki/16-Internal-Implementation.md) |
+| 17 | [Complete Examples](https://github.com/vorcyc/Vorcyc.Quiver/wiki/17-Examples.md) |
+| 18 | [API Reference Cheat Sheet](https://github.com/vorcyc/Vorcyc.Quiver/wiki/18-API-Reference.md) |
+| 19 | [Usage Recommendations](https://github.com/vorcyc/Vorcyc.Quiver/wiki/19-Usage-Recommendations.md) |
 
 ---
 

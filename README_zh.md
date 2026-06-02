@@ -195,30 +195,30 @@ sequenceDiagram
 
 ## 文档
 
-完整章节文档请访问[中文 Wiki](wiki_hans/Home.md)：
+完整章节文档请访问[中文 Wiki](https://github.com/vorcyc/Vorcyc.Quiver/wiki/Home_zh.md)：
 
 | # | 章节 |
 |---|---|
-| 01 | [版本说明](wiki_hans/01-Release-Notes.md) |
-| 02 | [产品概述](wiki_hans/02-Product-Overview.md) |
-| 03 | [架构概述](wiki_hans/03-Architecture.md) |
-| 04 | [快速开始](wiki_hans/04-Quick-Start.md) |
-| 05 | [核心概念](wiki_hans/05-Core-Concepts.md) |
-| 06 | [距离度量](wiki_hans/06-Distance-Metrics.md) |
-| 07 | [索引类型](wiki_hans/07-Index-Types.md) |
-| 08 | [CRUD 操作](wiki_hans/08-CRUD.md) |
-| 09 | [向量搜索](wiki_hans/09-Vector-Search.md) |
-| 10 | [持久化存储](wiki_hans/10-Persistence.md) |
-| 11 | [迁移系统](wiki_hans/11-Migration-System.md) |
-| 11a | [模式迁移](wiki_hans/11-Schema-Migration.md) |
-| 12 | [多向量字段支持](wiki_hans/12-Multi-Vector-Fields.md) |
-| 13 | [线程安全与并发](wiki_hans/13-Thread-Safety.md) |
-| 14 | [生命周期管理](wiki_hans/14-Lifecycle.md) |
-| 15 | [配置选项](wiki_hans/15-Configuration.md) |
-| 16 | [内部实现细节](wiki_hans/16-Internal-Implementation.md) |
-| 17 | [完整示例](wiki_hans/17-Examples.md) |
-| 18 | [API 参考速查表](wiki_hans/18-API-Reference.md) |
-| 19 | [使用建议](wiki_hans/19-Usage-Recommendations.md) |
+| 01 | [版本说明](https://github.com/vorcyc/Vorcyc.Quiver/wiki/01-Release-Notes_zh.md) |
+| 02 | [产品概述](https://github.com/vorcyc/Vorcyc.Quiver/wiki/02-Product-Overview_zh.md) |
+| 03 | [架构概述](https://github.com/vorcyc/Vorcyc.Quiver/wiki/03-Architecture_zh.md) |
+| 04 | [快速开始](https://github.com/vorcyc/Vorcyc.Quiver/wiki/04-Quick-Start_zh.md) |
+| 05 | [核心概念](https://github.com/vorcyc/Vorcyc.Quiver/wiki/05-Core-Concepts_zh.md) |
+| 06 | [距离度量](https://github.com/vorcyc/Vorcyc.Quiver/wiki/06-Distance-Metrics_zh.md) |
+| 07 | [索引类型](https://github.com/vorcyc/Vorcyc.Quiver/wiki/07-Index-Types_zh.md) |
+| 08 | [CRUD 操作](https://github.com/vorcyc/Vorcyc.Quiver/wiki/08-CRUD_zh.md) |
+| 09 | [向量搜索](https://github.com/vorcyc/Vorcyc.Quiver/wiki/09-Vector-Search_zh.md) |
+| 10 | [持久化存储](https://github.com/vorcyc/Vorcyc.Quiver/wiki/10-Persistence_zh.md) |
+| 11 | [迁移系统](https://github.com/vorcyc/Vorcyc.Quiver/wiki/11-Migration-System._zhmd) |
+| 11a | [模式迁移](https://github.com/vorcyc/Vorcyc.Quiver/wiki/11-Schema-Migration_zh.md) |
+| 12 | [多向量字段支持](https://github.com/vorcyc/Vorcyc.Quiver/wiki/12-Multi-Vector-Fields_zh.md) |
+| 13 | [线程安全与并发](https://github.com/vorcyc/Vorcyc.Quiver/wiki/13-Thread-Safety_zh.md) |
+| 14 | [生命周期管理](https://github.com/vorcyc/Vorcyc.Quiver/wiki/14-Lifecycle_zh.md) |
+| 15 | [配置选项](https://github.com/vorcyc/Vorcyc.Quiver/wiki/15-Configuration_zh.md) |
+| 16 | [内部实现细节](https://github.com/vorcyc/Vorcyc.Quiver/wiki/16-Internal-Implementation_zh.md) |
+| 17 | [完整示例](https://github.com/vorcyc/Vorcyc.Quiver/wiki/17-Examples_zh.md) |
+| 18 | [API 参考速查表](https://github.com/vorcyc/Vorcyc.Quiver/wiki/18-API-Reference_zh.md) |
+| 19 | [使用建议](https://github.com/vorcyc/Vorcyc.Quiver/wiki/19-Usage-Recommendations_zh.md) |
 
 ---
 

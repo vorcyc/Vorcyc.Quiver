@@ -1,5 +1,7 @@
 # Vorcyc Quiver 4.0.1
 
+[English Document](README.md) | [中文文档](README_zh.md)
+
 ![Vorcyc Quiver 4.0.1](logo.jpg "Vorcyc Quiver 4.0.1")
 
 > **A pure .NET embedded vector database** — zero native dependencies, in-process deployment, EF Core-style code-first modeling.
@@ -11,6 +13,7 @@
 | License | MIT |
 | NuGet | [![NuGet](https://img.shields.io/nuget/v/Vorcyc.Quiver)](https://www.nuget.org/packages/Vorcyc.Quiver) |
 | Source | https://github.com/vorcyc/Vorcyc.Quiver |
+| WIKI | https://github.com/vorcyc/Vorcyc.Quiver/wiki |
 | Namespace | `Vorcyc.Quiver` |
 
 > **Name Origin**: Quiver — a container for arrows; a vector is mathematically an arrow.

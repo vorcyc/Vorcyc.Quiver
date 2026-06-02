@@ -1,5 +1,7 @@
 # Vorcyc Quiver 4.0.1
 
+[English Document](README.md) | [中文文档](README_zh.md)
+
 ![Vorcyc Quiver 4.0.1](logo.jpg "Vorcyc Quiver 4.0.1")
 
 > **纯 .NET 嵌入式向量数据库** —— 零原生依赖，进程内部署，EF Core 风格代码优先建模。
@@ -11,6 +13,7 @@
 | 许可证 | MIT |
 | NuGet | [![NuGet](https://img.shields.io/nuget/v/Vorcyc.Quiver)](https://www.nuget.org/packages/Vorcyc.Quiver) |
 | 源码 | https://github.com/vorcyc/Vorcyc.Quiver |
+| WIKI | https://github.com/vorcyc/Vorcyc.Quiver/wiki/Home_zh |
 | 命名空间 | `Vorcyc.Quiver` |
 
 > **名称由来**：Quiver（箭袋）—— 在数学上，向量就是一支箭。

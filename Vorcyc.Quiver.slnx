@@ -2,7 +2,7 @@
   <Folder Name="/docs/">
     <File Path="logo.jpg" />
     <File Path="README.md" />
-    <File Path="README_zh_cn.md" />
+    <File Path="README_zh.md" />
   </Folder>
   <Folder Name="/docs/wiki_en/">
     <File Path="wiki_en/01-Release-Notes.md" />

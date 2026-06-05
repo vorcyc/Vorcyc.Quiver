@@ -178,21 +178,22 @@ public sealed class QuiverLargeFieldAttribute : Attribute
 public class QuiverKeyAttribute : Attribute;
 
 /// <summary>
-/// 为实体类型显式声明一个<b>持久化稳定名</b>，写入 v4 文件段头和 footer 时以该名为准，
-/// 取代默认的 <see cref="System.Type.FullName"/>。
+/// Explicitly declares a <b>persistent stable name</b> for an entity type. This name is used when
+/// writing v4 file segment headers and footers, replacing the default <see cref="System.Type.FullName"/>.
 /// <para>
-/// 适用场景：随时间推移想重构实体的命名空间或类名，又不希望旧文件因 TypeName 不匹配
-/// 而失效。一旦贴上特性，文件里的标识就与 CLR 命名空间解耦。
+/// Use case: when you want to refactor the namespace or class name of an entity over time
+/// without invalidating old files due to a TypeName mismatch.
+/// Once applied, the on-disk identifier is decoupled from the CLR namespace.
 /// </para>
 /// <para>
-/// 向后兼容：
+/// Backward compatibility:
 /// <list type="bullet">
-///   <item>未贴此特性的类型继续使用 <c>Type.FullName</c>，原有文件零变化。</item>
-///   <item><see cref="QuiverDbContext"/> 在加载时会同时登记<see cref="Name"/>和<see cref="System.Type.FullName"/>，
-///   因此第一次给一个旧类型加上特性时，旧文件（按 FullName 写入）仍能读出来——
-///   下一次 <c>SaveAsync</c> 会以新名写回，完成迁移。</item>
-///   <item>当 <see cref="Migration.QuiverMigrator.MigrateAsync"/> 升级 v1/v2/v3 时，
-///   也会按解析后的稳定名重 key，使旧文件直接可被新代码读取。</item>
+///   <item>Types without this attribute continue to use <c>Type.FullName</c>; existing files are unaffected.</item>
+///   <item><see cref="QuiverDbContext"/> registers both <see cref="Name"/> and <see cref="System.Type.FullName"/> at load time,
+///   so the first time this attribute is added to an existing type, old files (written with FullName) can still be read —
+///   the next <c>SaveAsync</c> will write back with the new name, completing the migration.</item>
+///   <item>When <see cref="Migration.QuiverMigrator.MigrateAsync"/> upgrades v1/v2/v3 files,
+///   it also re-keys using the resolved stable name so old files are directly readable by new code.</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -210,15 +211,15 @@ public class QuiverKeyAttribute : Attribute;
 public sealed class QuiverEntityAttribute : Attribute
 {
     /// <summary>
-    /// 持久化稳定名。必须非空、且在一个 <see cref="QuiverDbContext"/> 内全局唯一。
-    /// 推荐使用类名或带前缀的命名空间无关字符串，例如 <c>"AudioMediaEntity"</c> 或 <c>"app:AudioMedia"</c>。
+    /// The persistent stable name. Must be non-empty and globally unique within a <see cref="QuiverDbContext"/>.
+    /// Recommended values are the class name or a namespace-agnostic prefixed string such as <c>"AudioMediaEntity"</c> or <c>"app:AudioMedia"</c>.
     /// </summary>
     public string Name { get; }
 
     /// <summary>
-    /// 构造特性实例。
+    /// Initializes a new instance of the attribute.
     /// </summary>
-    /// <param name="name">持久化稳定名；不可为 <see langword="null"/> 或空字符串。</param>
+    /// <param name="name">The persistent stable name; must not be <see langword="null"/> or an empty string.</param>
     public QuiverEntityAttribute(string name)
     {
         if (string.IsNullOrEmpty(name))
@@ -456,10 +457,11 @@ public enum ExportFormat
 }
 
 /// <summary>
-/// 单个大字段（<see cref="QuiverLargeFieldAttribute"/>）的内存策略。
+/// Memory strategy for a single large field (<see cref="QuiverLargeFieldAttribute"/>).
 /// <para>
-/// 该枚举只承载字段级可选的具体策略，<b>不</b>包含 <c>PerField</c> 这类仅在全局有意义的值——
-/// 全局策略请使用 <see cref="GlobalLargeFieldMemoryMode"/>。
+/// This enum only contains field-level concrete strategies; it does <b>not</b> include values
+/// such as <c>PerField</c> that are only meaningful at the global level —
+/// use <see cref="GlobalLargeFieldMemoryMode"/> for the global strategy.
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverLargeFieldAttribute"/>
@@ -483,11 +485,12 @@ public enum LargeFieldMemoryMode
 }
 
 /// <summary>
-/// 大字段负载的<b>全局</b>内存策略，配置于
-/// <see cref="QuiverDbOptions.LargeFields"/>.<see cref="QuiverLargeFieldOptions.MemoryMode"/>。
+/// <b>Global</b> memory strategy for large-field payloads, configured via
+/// <see cref="QuiverDbOptions.LargeFields"/>.<see cref="QuiverLargeFieldOptions.MemoryMode"/>.
 /// <para>
-/// 在字段级具体策略（<see cref="LargeFieldMemoryMode"/>）之外，额外提供 <see cref="PerField"/>，
-/// 表示尊重每个 <see cref="QuiverLargeFieldAttribute"/> 上声明的字段级策略。
+/// In addition to the field-level concrete strategies (<see cref="LargeFieldMemoryMode"/>),
+/// this enum provides <see cref="PerField"/>, which honors the field-level strategy
+/// declared on each <see cref="QuiverLargeFieldAttribute"/>.
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverDbOptions"/>
@@ -518,10 +521,11 @@ public enum GlobalLargeFieldMemoryMode
 }
 
 /// <summary>
-/// 单个向量字段（<see cref="QuiverVectorAttribute"/>）的内存策略。
+/// Memory strategy for a single vector field (<see cref="QuiverVectorAttribute"/>).
 /// <para>
-/// 该枚举只承载字段级可选的具体策略，<b>不</b>包含 <c>Auto</c> / <c>PerField</c> 这类仅在全局有意义的值——
-/// 全局策略请使用 <see cref="GlobalVectorMemoryMode"/>。
+/// This enum only contains field-level concrete strategies; it does <b>not</b> include values
+/// such as <c>Auto</c> / <c>PerField</c> that are only meaningful at the global level —
+/// use <see cref="GlobalVectorMemoryMode"/> for the global strategy.
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverVectorAttribute"/>
@@ -531,19 +535,17 @@ public enum VectorMemoryMode
     /// <summary>Vectors are stored in managed memory.</summary>
     InMemory,
 
-    /// <summary>Vectors are materialized on first property access while the backing store remains managed memory.</summary>
-    LazyLoad,
-
     /// <summary>Persisted vectors are exposed through memory-mapped regions.</summary>
     MemoryMapped,
 }
 
 /// <summary>
-/// 向量负载的<b>全局</b>内存策略，配置于
-/// <see cref="QuiverDbOptions.Vectors"/>.<see cref="QuiverVectorOptions.MemoryMode"/>。
+/// <b>Global</b> memory strategy for vector payloads, configured via
+/// <see cref="QuiverDbOptions.Vectors"/>.<see cref="QuiverVectorOptions.MemoryMode"/>.
 /// <para>
-/// 在字段级具体策略（<see cref="VectorMemoryMode"/>）之外，额外提供 <see cref="Auto"/>（按文件大小阈值自动选择）
-/// 与 <see cref="PerField"/>（尊重每个 <see cref="QuiverVectorAttribute"/> 上声明的字段级策略）。
+/// In addition to the field-level concrete strategies (<see cref="VectorMemoryMode"/>),
+/// this enum provides <see cref="Auto"/> (automatically selected based on a file-size threshold)
+/// and <see cref="PerField"/> (honors the field-level strategy declared on each <see cref="QuiverVectorAttribute"/>).
 /// </para>
 /// </summary>
 /// <seealso cref="QuiverDbOptions"/>
@@ -552,9 +554,6 @@ public enum GlobalVectorMemoryMode
 {
     /// <summary>Vectors are stored in managed memory.</summary>
     InMemory,
-
-    /// <summary>Vectors are materialized on first property access while the backing store remains managed memory.</summary>
-    LazyLoad,
 
     /// <summary>Persisted vectors are exposed through memory-mapped regions.</summary>
     MemoryMapped,

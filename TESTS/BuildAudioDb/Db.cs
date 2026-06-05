@@ -12,7 +12,6 @@ public class AudioDbContext : QuiverDbContext
         DatabasePath = databasePath,
         DefaultMetric = DistanceMetric.Cosine,
         //LargeFields = { MemoryMode = GlobalLargeFieldMemoryMode.InMemory },
-        //Vectors = { MemoryMode = GlobalVectorMemoryMode.LazyLoad },
         LargeFields = { MemoryMode = GlobalLargeFieldMemoryMode.LazyLoad},
         Vectors = { MemoryMode = GlobalVectorMemoryMode.MemoryMapped },
     })

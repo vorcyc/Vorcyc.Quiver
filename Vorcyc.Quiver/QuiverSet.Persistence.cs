@@ -170,7 +170,9 @@ public partial class QuiverSet<TEntity>
     /// <summary>
     /// <see cref="Vorcyc.Quiver.Runtime.ILazyVectorSource"/> 实现：由 source generator 生成的 lazy 向量属性
     /// getter 通过 <see cref="Vorcyc.Quiver.Runtime.LazyVectorAccessor.Materialize"/> 间接调用。
-    /// 返回从底层 <see cref="Indexing.IVectorStore"/> 复制出的新数组；不存在或字段无效时返回 <c>null</c>。
+    /// 对于 <see cref="HeapVectorStore"/> 直接返回 store 内部 float[] 引用（零拷贝，entity backing field
+    /// 与 store 共享同一数组，与 InMemory 模式内存占用一致）；不支持直接引用的 store 回退到副本。
+    /// 不存在或字段无效时返回 <c>null</c>。
     /// </summary>
     float[]? Vorcyc.Quiver.Runtime.ILazyVectorSource.GetVector(int internalId, string fieldName)
     {
@@ -182,8 +184,10 @@ public partial class QuiverSet<TEntity>
         try
         {
             if (!store.Contains(internalId)) return null;
-            var span = store.Get(internalId);
-            return span.ToArray();
+            // For HeapVectorStore: zero-copy — return the internally owned float[] reference so
+            // the entity backing field and the store share the same array (same memory footprint as InMemory).
+            // For stores that cannot expose internal references (mmap, fp16): fall back to a copy.
+            return store.GetArrayRef(internalId) ?? store.Get(internalId).ToArray();
         }
         finally { _lock.ExitReadLock(); }
     }

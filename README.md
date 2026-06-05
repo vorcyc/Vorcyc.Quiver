@@ -1,14 +1,14 @@
-# Vorcyc Quiver 4.0.1
+# Vorcyc Quiver 4.0.3
 
 [English Document](README.md) | [中文文档](README_zh.md)
 
-![Vorcyc Quiver 4.0.1](logo.jpg "Vorcyc Quiver 4.0.1")
+![Vorcyc Quiver 4.0.3](logo.jpg "Vorcyc Quiver 4.0.3")
 
 > **A pure .NET embedded vector database** — zero native dependencies, in-process deployment, EF Core-style code-first modeling.
 
 | Item | Value |
 |---|---|
-| Version | 4.0.1 |
+| Version | 4.0.3 |
 | Target Framework | .NET 10 |
 | License | MIT |
 | NuGet | [![NuGet](https://img.shields.io/nuget/v/Vorcyc.Quiver)](https://www.nuget.org/packages/Vorcyc.Quiver) |

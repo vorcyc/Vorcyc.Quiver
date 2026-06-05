@@ -53,6 +53,9 @@ internal sealed class HeapVectorStore : IVectorStore
     public ReadOnlySpan<float> Get(int id) => _vectors[id];
 
     /// <inheritdoc />
+    public float[]? GetArrayRef(int id) => _vectors.TryGetValue(id, out var arr) ? arr : null;
+
+    /// <inheritdoc />
     public bool Contains(int id) => _vectors.ContainsKey(id);
 
     /// <inheritdoc />

@@ -1,14 +1,14 @@
-# Vorcyc Quiver 4.0.1
+# Vorcyc Quiver 4.0.3
 
 [English Document](README.md) | [中文文档](README_zh.md)
 
-![Vorcyc Quiver 4.0.1](logo.jpg "Vorcyc Quiver 4.0.1")
+![Vorcyc Quiver 4.0.3](logo.jpg "Vorcyc Quiver 4.0.3")
 
 > **纯 .NET 嵌入式向量数据库** —— 零原生依赖，进程内部署，EF Core 风格代码优先建模。
 
 | 项目 | 值 |
 |---|---|
-| 版本 | 4.0.1 |
+| 版本 | 4.0.3 |
 | 目标框架 | .NET 10 |
 | 许可证 | MIT |
 | NuGet | [![NuGet](https://img.shields.io/nuget/v/Vorcyc.Quiver)](https://www.nuget.org/packages/Vorcyc.Quiver) |

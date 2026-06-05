@@ -38,6 +38,7 @@ internal sealed class VectorStoreSlot : IVectorStore
     public void StoreByRef(int id, float[] vector) => _inner.StoreByRef(id, vector);
     public void StoreByRefHalf(int id, Half[] vector) => _inner.StoreByRefHalf(id, vector);
     public ReadOnlySpan<float> Get(int id) => _inner.Get(id);
+    public float[]? GetArrayRef(int id) => _inner.GetArrayRef(id);
     public Half[]? GetHalfCopy(int id) => _inner.GetHalfCopy(id);
     public bool Contains(int id) => _inner.Contains(id);
     public void Remove(int id) => _inner.Remove(id);

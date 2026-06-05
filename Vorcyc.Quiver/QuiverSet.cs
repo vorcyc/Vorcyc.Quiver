@@ -570,7 +570,6 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity>, Vor
         => globalMode switch
         {
             GlobalVectorMemoryMode.InMemory => VectorMemoryMode.InMemory,
-            GlobalVectorMemoryMode.LazyLoad => VectorMemoryMode.LazyLoad,
             GlobalVectorMemoryMode.MemoryMapped => VectorMemoryMode.MemoryMapped,
             GlobalVectorMemoryMode.Auto => VectorMemoryMode.InMemory,
             GlobalVectorMemoryMode.PerField => fieldMode,
@@ -599,11 +598,17 @@ public partial class QuiverSet<TEntity> : IDisposable, IEnumerable<TEntity>, Vor
                 $"[QuiverVector] property '{prop.Name}' on {entityType.Name} must have both getter and setter when " +
                 $"{nameof(VectorMemoryMode)}.{memoryMode} is used.");
 
+        // 源生成器为 float[] 属性生成 float[] backing，为 Half[] 属性生成 Half[] backing；
+        // 要求 backing 字段类型与属性的向量元素类型一致。
+        var expectedBacking = prop.PropertyType == typeof(Half[]) ? typeof(Half[]) : typeof(float[]);
         var backing = entityType.GetField("__" + prop.Name + "_backing", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (backing is null || backing.FieldType != typeof(float[]))
+        if (backing is null || backing.FieldType != expectedBacking)
+        {
+            var elementTypeName = expectedBacking == typeof(Half[]) ? "Half[]" : "float[]";
             throw new InvalidOperationException(
                 $"[QuiverVector] property '{prop.Name}' on {entityType.Name} uses {nameof(VectorMemoryMode)}.{memoryMode}. " +
-                $"Declare it as 'public partial float[]? {prop.Name} {{ get; set; }}' in a partial type so the Quiver source generator can create the lazy accessor.");
+                $"Declare it as 'public partial {elementTypeName}? {prop.Name} {{ get; set; }}' in a partial type so the Quiver source generator can create the lazy accessor.");
+        }
     }
 
     private static void ValidateLazyLargeFieldAccessor(

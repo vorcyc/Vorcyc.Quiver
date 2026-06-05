@@ -270,8 +270,7 @@ public abstract partial class QuiverDbContext : IDisposable, IAsyncDisposable, I
             clear?.Invoke(set, null);
         }
 
-        bool useMmap = _options.Vectors.MemoryMode != GlobalVectorMemoryMode.InMemory
-            && _options.Vectors.MemoryMode != GlobalVectorMemoryMode.LazyLoad;
+        bool useMmap = _options.Vectors.MemoryMode != GlobalVectorMemoryMode.InMemory;
 
         // Atomic write: write to a temp file first, then replace the original on success
         var tempPath = filePath + ".tmp";
@@ -540,8 +539,7 @@ public abstract partial class QuiverDbContext : IDisposable, IAsyncDisposable, I
         // ── mmap-aware path: build a (typeName, fieldName) predicate from each set's IsMmapField. ──
         // 当 GlobalVectorMemoryMode 为 MemoryMapped/Auto/PerField 且 set 中存在以 MmapVectorStore 持有的字段时，
         // BinaryStorageProvider 会跳过该字段的 float[] 物化并输出 MmapVectorRegion。
-        bool useMmap = _options.Vectors.MemoryMode != GlobalVectorMemoryMode.InMemory
-            && _options.Vectors.MemoryMode != GlobalVectorMemoryMode.LazyLoad;
+        bool useMmap = _options.Vectors.MemoryMode != GlobalVectorMemoryMode.InMemory;
         bool useLazyLargeFields = _options.LargeFields.MemoryMode != GlobalLargeFieldMemoryMode.InMemory;
         Dictionary<string, List<object>> loadedSets;
         List<Vorcyc.Quiver.Storage.MmapVectorRegion>? mmapRegions = null;

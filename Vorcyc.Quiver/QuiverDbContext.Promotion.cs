@@ -70,10 +70,9 @@ public abstract partial class QuiverDbContext
         //    简化实现且严格保证文件内容与内存快照一致；后续可针对单 set 优化。
         await SaveAsync(filePath).ConfigureAwait(false);
 
-        // 2) SaveAsync 之后，如果全局 Vectors.MemoryMode 不是 InMemory/LazyLoad，本 set 的 mmap 字段已被 rebind；
-        //    InMemory/LazyLoad 下 SaveAsync 没有 rebind 步骤，需要这里手动把 Heap → Mmap 切换。
-        if (_options.Vectors.MemoryMode != GlobalVectorMemoryMode.InMemory
-            && _options.Vectors.MemoryMode != GlobalVectorMemoryMode.LazyLoad)
+        // 2) SaveAsync 之后，如果全局 Vectors.MemoryMode 不是 InMemory，本 set 的 mmap 字段已被 rebind；
+        //    InMemory 下 SaveAsync 没有 rebind 步骤，需要这里手动把 Heap → Mmap 切换。
+        if (_options.Vectors.MemoryMode != GlobalVectorMemoryMode.InMemory)
             return; // SaveAsync 已经处理过
 
         var regions = BinaryStorageProvider.ReadVectorBlobRegions(filePath);

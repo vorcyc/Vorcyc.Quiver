@@ -88,6 +88,17 @@ public class HalfVectorDb(string path) : QuiverDbContext(new QuiverDbOptions
     public QuiverSet<HalfVectorEntity> Items { get; set; } = null!;
 }
 
+/// <summary>Half[] + MemoryMapped 向量数据库上下文。</summary>
+public class MmapHalfVectorDb(string path) : QuiverDbContext(new QuiverDbOptions
+{
+    DatabasePath = path,
+    DefaultMetric = DistanceMetric.Cosine,
+    Vectors = { MemoryMode = GlobalVectorMemoryMode.MemoryMapped }
+})
+{
+    public QuiverSet<MmapHalfVectorEntity> Items { get; set; } = null!;
+}
+
 // ── Schema 迁移测试上下文 ──
 /// <list type="bullet">
 ///   <item>OldTitle → Title（属性重命名）</item>

@@ -101,6 +101,19 @@ public class HalfVectorEntity
     public Half[] Vec { get; set; } = [];
 }
 
+/// <summary>
+/// Half[] + MemoryMapped 向量实体。
+/// 用于验证 fp16 向量在内存映射模式下的持久化往返与 lazy 物化（partial 属性 + 源生成器 Half[] 访问器）。
+/// </summary>
+public partial class MmapHalfVectorEntity
+{
+    [QuiverKey]
+    public string Id { get; set; } = string.Empty;
+
+    [QuiverVector(16, DistanceMetric.Cosine, MemoryMode = VectorMemoryMode.MemoryMapped)]
+    public partial Half[]? Vec { get; set; }
+}
+
 // ══════════════════════════════════════════════════════════════════
 // 度量测试实体
 // ══════════════════════════════════════════════════════════════════

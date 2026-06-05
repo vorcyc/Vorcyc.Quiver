@@ -48,8 +48,8 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
 
     internal static readonly DiagnosticDescriptor QVR003_InvalidPropertyType = new(
         id: "QVR003",
-        title: "Vector memory-mode property type must be float[] or float[]?",
-        messageFormat: "Property '{0}' has type '{1}' but non-InMemory vector memory mode requires 'float[]' or 'float[]?'",
+        title: "Vector memory-mode property type must be float[] or Half[]",
+        messageFormat: "Property '{0}' has type '{1}' but non-InMemory vector memory mode requires 'float[]', 'float[]?', 'Half[]', or 'Half[]?'",
         category: "Vorcyc.Quiver.SourceGenerators",
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
@@ -73,13 +73,13 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
             .Collect();
 
         context.RegisterSourceOutput(candidates, static (spc, items) =>
-            EmitProperties(spc, items, "VectorMemoryProperties", "float[]?", "LazyVectorAccessor"));
+            EmitProperties(spc, items, "VectorMemoryProperties", "LazyVectorAccessor"));
 
         context.RegisterSourceOutput(largeFieldCandidates, static (spc, items) =>
-            EmitProperties(spc, items, "LargeFieldMemoryProperties", "byte[]?", "LazyLargeFieldAccessor"));
+            EmitProperties(spc, items, "LargeFieldMemoryProperties", "LazyLargeFieldAccessor"));
     }
 
-    private static void EmitProperties(SourceProductionContext spc, ImmutableArray<TransformResult?> items, string hintSuffix, string backingType, string accessorType)
+    private static void EmitProperties(SourceProductionContext spc, ImmutableArray<TransformResult?> items, string hintSuffix, string accessorType)
     {
         {
             if (items.IsDefaultOrEmpty) return;
@@ -98,7 +98,7 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
             foreach (var group in valid.GroupBy(r => r!.Info!.TypeKey))
             {
                 var sample = group.First()!.Info!;
-                var source = Emit(sample, group.Select(r => r!.Info!).ToList(), backingType, accessorType);
+                var source = Emit(sample, group.Select(r => r!.Info!).ToList(), accessorType);
                 var hint = $"{group.Key}.{hintSuffix}.g.cs"
                     .Replace('<', '_').Replace('>', '_').Replace(',', '_').Replace(' ', '_');
                 spc.AddSource(hint, source);
@@ -145,20 +145,51 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
                     nonPartialType.ToDisplayString(), prop.Name));
         }
 
-        // QVR003/QVR004：属性类型必须匹配载荷类型
+        // QVR003/QVR004：属性类型必须匹配载荷类型。
+        // 通过符号模型（IArrayTypeSymbol + NullableAnnotation）判定元素类型与可空性，
+        // 避免依赖 ToDisplayString() 对 System.Half（无 C# 关键字）的渲染差异。
         var propType = prop.Type.ToDisplayString();
-        if (!isLargeField && propType != "float[]" && propType != "float[]?")
+        var isNullable = prop.Type.NullableAnnotation == NullableAnnotation.Annotated;
+        var elementType = (prop.Type as IArrayTypeSymbol)?.ElementType;
+        var isFloatArray = elementType is { SpecialType: SpecialType.System_Single };
+        var isByteArray = elementType is { SpecialType: SpecialType.System_Byte };
+        var isHalfArray = elementType is { Name: "Half", ContainingNamespace.Name: "System" };
+
+        string backingType;
+        string emitPropertyType;
+        string materializeMethod;
+        if (isLargeField)
+        {
+            if (!isByteArray)
+            {
+                return new TransformResult(
+                    Info: null,
+                    Diag: Diagnostic.Create(QVR004_InvalidLargeFieldPropertyType, propLocation,
+                        prop.Name, propType));
+            }
+            backingType = "byte[]?";
+            emitPropertyType = isNullable ? "byte[]?" : "byte[]";
+            materializeMethod = "Materialize";
+        }
+        else if (isFloatArray)
+        {
+            backingType = "float[]?";
+            emitPropertyType = isNullable ? "float[]?" : "float[]";
+            materializeMethod = "Materialize";
+        }
+        else if (isHalfArray)
+        {
+            // fp16 lazy/mmap vector：使用 Half[]? backing 并通过 MaterializeHalf 物化，
+            // 全限定 System.Half 以避免生成文件缺少 using System 导致解析失败。
+            backingType = "global::System.Half[]?";
+            emitPropertyType = isNullable ? "global::System.Half[]?" : "global::System.Half[]";
+            materializeMethod = "MaterializeHalf";
+        }
+        else
         {
             return new TransformResult(
                 Info: null,
                 Diag: Diagnostic.Create(QVR003_InvalidPropertyType, propLocation,
-                    prop.Name, propType));
-        }
-        if (isLargeField && propType != "byte[]" && propType != "byte[]?")
-        {
-            return new TransformResult(
-                Info: null,
-                Diag: Diagnostic.Create(QVR004_InvalidLargeFieldPropertyType, propLocation,
                     prop.Name, propType));
         }
 
@@ -185,6 +216,9 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
                     TypeParameters: t.TypeParameters.Select(p => p.Name).ToArray())).ToArray(),
                 PropertyName: prop.Name,
                 PropertyType: propType,
+                EmitPropertyType: emitPropertyType,
+                BackingType: backingType,
+                MaterializeMethod: materializeMethod,
                 TypeKey: typeKey),
             Diag: null);
     }
@@ -208,7 +242,7 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
         return null;
     }
 
-    private static string Emit(PropertyInfo sample, List<PropertyInfo> props, string backingType, string accessorType)
+    private static string Emit(PropertyInfo sample, List<PropertyInfo> props, string accessorType)
     {
         var sb = new StringBuilder();
         sb.AppendLine("// <auto-generated/>");
@@ -235,12 +269,12 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
         foreach (var p in props)
         {
             var backing = "__" + p.PropertyName + "_backing";
-            Indent(sb, indent).Append("private ").Append(backingType).Append(' ').Append(backing).AppendLine(";");
+            Indent(sb, indent).Append("private ").Append(p.BackingType).Append(' ').Append(backing).AppendLine(";");
             sb.AppendLine();
-            Indent(sb, indent).Append("public partial ").Append(p.PropertyType).Append(' ').Append(p.PropertyName).AppendLine();
+            Indent(sb, indent).Append("public partial ").Append(p.EmitPropertyType).Append(' ').Append(p.PropertyName).AppendLine();
             Indent(sb, indent).AppendLine("{");
             Indent(sb, indent + 1).Append("get => ").Append(backing)
-                .Append(" ?? global::Vorcyc.Quiver.Runtime.").Append(accessorType).Append(".Materialize(this, \"")
+                .Append(" ??= global::Vorcyc.Quiver.Runtime.").Append(accessorType).Append('.').Append(p.MaterializeMethod).Append("(this, \"")
                 .Append(p.PropertyName).AppendLine("\");");
             Indent(sb, indent + 1).Append("set => ").Append(backing).AppendLine(" = value;");
             Indent(sb, indent).AppendLine("}");
@@ -270,6 +304,9 @@ public sealed class VectorMemoryPropertyGenerator : IIncrementalGenerator
         TypeRef[] TypeChain,
         string PropertyName,
         string PropertyType,
+        string EmitPropertyType,
+        string BackingType,
+        string MaterializeMethod,
         string TypeKey);
 
     internal sealed record TransformResult(PropertyInfo? Info, Diagnostic? Diag);

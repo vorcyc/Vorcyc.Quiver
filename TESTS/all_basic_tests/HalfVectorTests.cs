@@ -19,6 +19,7 @@ public static class HalfVectorTests
         await Test_Top1();
         await Test_ThresholdSearch();
         await Test_PersistenceRoundTrip();
+        await Test_MemoryMappedRoundTrip();
         await Test_Delete();
     }
 
@@ -200,6 +201,57 @@ public static class HalfVectorTests
             var q = RandomHalfVec(rng);
             var r = db2.Items.Search(e => e.Vec, q, topK: 5);
             Assert(r.Count > 0, $"Float16 持久化：重载后查询返回 {r.Count} 条");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    // ── 5b. Half[] + MemoryMapped 往返 ────────────────────────────
+
+    private static async Task Test_MemoryMappedRoundTrip()
+    {
+        var path = TempPath();
+        try
+        {
+            var rng = new Random(7);
+            var originals = new MmapHalfVectorEntity[Count];
+
+            // 写入（MemoryMapped 模式：Half[] 字段以 Float16 编码落盘）
+            using (var db = new MmapHalfVectorDb(path))
+            {
+                for (int i = 0; i < Count; i++)
+                {
+                    originals[i] = new MmapHalfVectorEntity { Id = $"h{i}", Vec = RandomHalfVec(rng) };
+                    db.Items.Add(originals[i]);
+                }
+                await db.SaveAsync();
+            }
+
+            // 读回：向量字段由 mmap 区域提供，partial 属性 getter 在首次访问时按需物化为 Half[]
+            using var db2 = new MmapHalfVectorDb(path);
+            await db2.LoadAsync();
+
+            Assert(db2.Items.Count == Count, $"Half[] mmap：加载数量 {db2.Items.Count}/{Count}");
+
+            // 验证 lazy 物化返回的是 Half[]，且 fp16 往返精度正确
+            bool allMatch = true;
+            for (int i = 0; i < 10; i++)
+            {
+                var loaded = db2.Items.Find(originals[i].Id);
+                if (loaded?.Vec is not { } vec || vec.Length != Dim) { allMatch = false; break; }
+                var orig = originals[i].Vec!;
+                for (int j = 0; j < Dim; j++)
+                {
+                    if (Math.Abs((float)orig[j] - (float)vec[j]) > 0.002f)
+                    { allMatch = false; break; }
+                }
+                if (!allMatch) break;
+            }
+            Assert(allMatch, "Half[] mmap：lazy 物化的向量值往返精度正确");
+
+            // 重载后查询仍正常
+            var q = RandomHalfVec(rng);
+            var r = db2.Items.Search(e => e.Vec!, q, topK: 5);
+            Assert(r.Count > 0, $"Half[] mmap：重载后查询返回 {r.Count} 条");
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

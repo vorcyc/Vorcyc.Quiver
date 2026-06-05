@@ -8,14 +8,14 @@
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
 		<!-- 版本号 -->
-		<Version>4.0.1</Version>
-		<AssemblyVersion>4.0.1.0</AssemblyVersion>
-		<FileVersion>4.0.1.0</FileVersion>
+		<Version>4.0.3</Version>
+		<AssemblyVersion>4.0.3.0</AssemblyVersion>
+		<FileVersion>4.0.3.0</FileVersion>
 
 		<!-- 程序集信息 -->
 		<AssemblyTitle>Vorcyc.Quiver</AssemblyTitle>
 		<Product>Vorcyc Quiver</Product>
-		<Description>A pure .NET embedded vector database — zero native dependencies, in-process, no server required. EF Core-style Code-First with declarative attributes, multiple ANN indices (Flat/HNSW/IVF/KDTree), mmap-backed lazy vectors, tombstone + background-merge incremental persistence, and SIMD-accelerated similarity search.</Description>
+		<Description>Pure .NET embedded vector database — zero dependencies, in-process. EF Core-style Code-First, Flat/HNSW/IVF/KDTree, 9 distance metrics, mmap vectors, segmented persistence, SIMD search.</Description>
 		<Authors>cyclone_dll</Authors>
 		<Company>Vorcyc</Company>
 		<Copyright>Copyright © Vorcyc 2026</Copyright>

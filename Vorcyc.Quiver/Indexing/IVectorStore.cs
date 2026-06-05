@@ -88,6 +88,19 @@ internal interface IVectorStore : IDisposable
     /// <returns>A read-only view of the vector data.</returns>
     ReadOnlySpan<float> Get(int id);
 
+    /// <summary>
+    /// Returns a direct reference to the internally stored <c>float[]</c> for the specified ID without copying,
+    /// or <c>null</c> if this store does not expose internal array references (e.g. mmap or fp16 stores).
+    /// <para>
+    /// Use this in the lazy materialization path to share the same array between the entity backing field
+    /// and the store, matching the memory behavior of <see cref="VectorMemoryMode.InMemory"/>.
+    /// The caller must not mutate the returned array.
+    /// </para>
+    /// </summary>
+    /// <param name="id">Internal ID.</param>
+    /// <returns>The internal <c>float[]</c> reference, or <c>null</c>.</returns>
+    float[]? GetArrayRef(int id) => null;
+
     /// <summary>Returns whether a vector with the specified ID exists.</summary>
     bool Contains(int id);
 

@@ -111,16 +111,22 @@ public partial class QuiverSet<TEntity>
                         idx.ReconcileWithStore();
             }
 
-            // 批量建图：对每个字段一次性导入收集到的 id。HnswIndex 会并行构建，其它索引退化为逐个 Add。
-            foreach (var (name, ids) in pendingIndexIds)
-            {
-                if (ids.Count == 0) continue;
-                _indices[name].BuildBulk(ids);
-            }
-
+            FlushPendingIndexBuilds(pendingIndexIds);
             NotifyHeapBytes();
         }
         finally { _lock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// 对延迟收集的 id 列表执行 <see cref="Indexing.IVectorIndex.BuildBulk"/>（HNSW 并行建图）。
+    /// </summary>
+    private void FlushPendingIndexBuilds(Dictionary<string, List<int>> pendingIndexIds)
+    {
+        foreach (var (name, ids) in pendingIndexIds)
+        {
+            if (ids.Count == 0) continue;
+            _indices[name].BuildBulk(ids);
+        }
     }
 
     /// <summary>

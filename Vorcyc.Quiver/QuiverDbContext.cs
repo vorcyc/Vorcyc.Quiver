@@ -66,6 +66,11 @@ public abstract partial class QuiverDbContext : IDisposable, IAsyncDisposable, I
     /// </summary>
     private readonly Dictionary<Type, MethodInfo> _getAllMethodCache = [];
 
+    /// <summary>Cached <c>AddRange</c> / <c>UpsertRange</c> / <c>Count</c> for <see cref="ImportAsync"/>.</summary>
+    private readonly Dictionary<Type, MethodInfo> _addRangeMethodCache = [];
+    private readonly Dictionary<Type, MethodInfo> _upsertRangeMethodCache = [];
+    private readonly Dictionary<Type, PropertyInfo> _countPropertyCache = [];
+
     /// <summary>
     /// Schema migration rules per entity type. Key is CLR entity type; value is the migration rule.
     /// <para>
@@ -160,8 +165,15 @@ public abstract partial class QuiverDbContext : IDisposable, IAsyncDisposable, I
             prop.SetValue(this, setInstance);
 
             // Cache reflection method references
-            _getAllMethodCache[entityType] = setInstance!.GetType()
+            var setType = setInstance!.GetType();
+            _getAllMethodCache[entityType] = setType
                 .GetMethod("GetAll", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            _addRangeMethodCache[entityType] = setType
+                .GetMethod("AddRange", BindingFlags.Instance | BindingFlags.Public)!;
+            _upsertRangeMethodCache[entityType] = setType
+                .GetMethod("UpsertRange", BindingFlags.Instance | BindingFlags.Public)!;
+            _countPropertyCache[entityType] = setType
+                .GetProperty("Count", BindingFlags.Instance | BindingFlags.Public)!;
 
             // 注入升级协调器：set 越限时回调 NotifyHeapBytesChanged，由 context 决定是否触发 mmap 升级。
             var attachM = setInstance!.GetType()
@@ -851,10 +863,14 @@ public abstract partial class QuiverDbContext : IDisposable, IAsyncDisposable, I
                     }
             }
 
-            // Upsert each record
-            var upsertMethod = set.GetType().GetMethod("Upsert", BindingFlags.Instance | BindingFlags.Public)!;
-            foreach (var entity in entities)
-                upsertMethod.Invoke(set, [entity]);
+            var castMethod = typeof(Enumerable).GetMethod("Cast")!.MakeGenericMethod(type);
+            var typedEntities = castMethod.Invoke(null, [entities])!;
+
+            var count = (int)_countPropertyCache[type].GetValue(set)!;
+            var batchMethod = count == 0
+                ? _addRangeMethodCache[type]
+                : _upsertRangeMethodCache[type];
+            batchMethod.Invoke(set, [typedEntities]);
         }
     }
 

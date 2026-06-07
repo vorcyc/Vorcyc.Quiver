@@ -1,146 +1,374 @@
-﻿namespace Vorcyc.Quiver.Storage;
-
+﻿using System.Buffers;
+using System.Collections.Concurrent;
+using System.IO.Pipelines;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Channels;
 using Vorcyc.Quiver.Migration;
+
+namespace Vorcyc.Quiver.Storage;
 
 /// <summary>
 /// JSON 格式的存储提供者，实现 <see cref="IStorageProvider"/> 接口。
-/// <para>
-/// 使用 <see cref="System.Text.Json"/> 进行序列化和反序列化，具有以下特点：
-/// <list type="bullet">
-///   <item>可读性好，生成的 JSON 文件便于调试和手动编辑。</item>
-///   <item>支持通过 <see cref="JsonSerializerOptions"/> 自定义缩进、命名策略等行为。</item>
-///   <item>文件体积相对较大，适合开发和调试阶段使用。</item>
-/// </list>
-/// </para>
 /// </summary>
-/// <param name="jsonOptions">
-/// JSON 序列化选项，控制输出格式（缩进、命名策略等）。
-/// 可通过 <see cref="ExportStorageProviderFactory.DefaultJsonOptions"/> 获取默认值。
-/// </param>
-/// <seealso cref="IStorageProvider"/>
-/// <seealso cref="ExportFormat.Json"/>
 internal class JsonExportProvider(JsonSerializerOptions jsonOptions) : IStorageProvider
 {
-    /// <summary>
-    /// 将所有向量集合以 JSON 格式异步持久化到指定文件。
-    /// <para>
-    /// 序列化结构为一个 JSON 对象，每个键对应一个向量集合的类型名称，
-    /// 值为该集合中所有实体组成的数组。示例：
-    /// <code>
-    /// {
-    ///   "FaceFeature": [
-    ///     { "id": "...", "embedding": [...] },
-    ///     ...
-    ///   ]
-    /// }
-    /// </code>
-    /// </para>
-    /// </summary>
-    /// <param name="filePath">目标文件的绝对或相对路径。文件不存在时自动创建，已存在时覆盖。</param>
-    /// <param name="sets">
-    /// 要保存的向量集合字典。键为类型名称，值为元组 <c>(Type, List&lt;object&gt;)</c>，
-    /// 包含实体的 CLR 类型及实体列表。
-    /// </param>
-    /// <returns>表示异步写入操作的任务。</returns>
+    private readonly JsonSerializerOptions _jsonOptions = jsonOptions;
+
+    /// <summary>在途实体 JSON 字节的软上限，用于限制 Channel 背压时的峰值内存。</summary>
+    private const long MaxInFlightBytes = 64L * 1024 * 1024;
+
     public async Task SaveAsync(string filePath, IReadOnlyDictionary<string, (Type Type, List<object> Entities)> sets)
     {
-        // 构建扁平字典：类型名称 → 实体列表（忽略 Type，序列化时由 JsonSerializer 自动推断）
-        var data = new Dictionary<string, object>();
-        foreach (var (typeName, (_, entities)) in sets)
-            data[typeName] = entities;
+        const int flushThreshold = 256 * 1024;
 
-        // 使用配置的选项序列化为 JSON 字符串，然后异步写入文件
-        var json = JsonSerializer.Serialize(data, jsonOptions);
-        await File.WriteAllTextAsync(filePath, json);
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 65536,
+            useAsync: true);
+
+        await using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions
+        {
+            Indented = _jsonOptions.WriteIndented
+        });
+
+        writer.WriteStartObject();
+
+        foreach (var (setName, (entityType, entities)) in sets)
+        {
+            writer.WritePropertyName(setName);
+            writer.WriteStartArray();
+
+            foreach (var entity in entities)
+            {
+                JsonSerializer.Serialize(writer, entity, entityType, _jsonOptions);
+
+                if (writer.BytesPending >= flushThreshold)
+                    await writer.FlushAsync();
+            }
+
+            writer.WriteEndArray();
+        }
+
+        writer.WriteEndObject();
+        await writer.FlushAsync();
     }
 
-    /// <summary>
-    /// 从指定 JSON 文件异步加载所有向量集合。
-    /// <para>
-    /// 加载流程：
-    /// <list type="number">
-    ///   <item>异步读取文件全部文本并解析为 <see cref="JsonDocument"/>。</item>
-    ///   <item>遍历根对象的每个属性，通过 <paramref name="typeMap"/> 匹配对应的 CLR 类型。</item>
-    ///   <item>若存在迁移规则，按重命名映射修正 JSON 属性名后再反序列化。</item>
-    ///   <item>逐元素反序列化为实体对象；未匹配的类型名称将被跳过（前向兼容）。</item>
-    /// </list>
-    /// </para>
-    /// </summary>
-    /// <param name="filePath">要读取的 JSON 文件路径。</param>
-    /// <param name="typeMap">
-    /// 类型名称到 CLR <see cref="Type"/> 的映射字典。
-    /// <para>文件中存在但字典中缺失的类型将被跳过，确保前向兼容。</para>
-    /// </param>
-    /// <param name="migrationRules">
-    /// 可选的 Schema 迁移规则字典。键为类型全名，值为迁移规则。
-    /// 包含属性重命名映射，加载时将 JSON 中的旧属性名转换为新属性名后再反序列化。
-    /// </param>
-    /// <returns>加载后的向量集合字典。键为类型名称，值为反序列化后的实体对象列表。</returns>
+    private readonly record struct RawEntityWork(
+        string SetName,
+        Type EntityType,
+        SchemaMigrationRule? Rule,
+        byte[] Buffer,
+        int Length);
+
     public async Task<Dictionary<string, List<object>>> LoadAsync(
         string filePath,
         IReadOnlyDictionary<string, Type> typeMap,
         IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules = null)
     {
-        var result = new Dictionary<string, List<object>>();
-
-        // 一次性读取整个 JSON 文件
-        var json = await File.ReadAllTextAsync(filePath);
-        // 解析为 DOM 文档，以便按属性逐项遍历
-        using var doc = JsonDocument.Parse(json);
-
-        // 遍历根对象的每个属性（每个属性对应一个向量集合）
-        foreach (var prop in doc.RootElement.EnumerateObject())
+        int workerCount = Math.Max(1, Environment.ProcessorCount);
+        int channelCapacity = Math.Max(4, workerCount * 2);
+        var channel = Channel.CreateBounded<RawEntityWork>(new BoundedChannelOptions(channelCapacity)
         {
-            // 跳过类型映射中不存在的集合（前向兼容：文件包含新增类型时不报错）
-            if (!typeMap.TryGetValue(prop.Name, out var type)) continue;
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
 
-            // 获取当前类型的迁移规则（如果有）
-            SchemaMigrationRule? rule = null;
-            if (migrationRules != null)
-                migrationRules.TryGetValue(prop.Name, out rule);
+        var bags = new ConcurrentDictionary<string, ConcurrentBag<object>>(StringComparer.Ordinal);
+        long inFlightBytes = 0;
 
-            var hasRenames = rule != null && rule.PropertyRenames.Count > 0;
+        using var cts = new CancellationTokenSource();
 
-            // 逐个反序列化数组中的实体对象
-            var entities = new List<object>();
-            foreach (var element in prop.Value.EnumerateArray())
+        var workerTasks = new Task[workerCount];
+        for (int i = 0; i < workerCount; i++)
+            workerTasks[i] = Task.Run(() => RunWorker(channel.Reader, bags, _jsonOptions, cts.Token,
+                bytes => Interlocked.Add(ref inFlightBytes, -bytes)));
+
+        Exception? scannerException = null;
+        try
+        {
+            await ScanAsync(filePath, typeMap, migrationRules, channel.Writer, cts.Token,
+                onPost: work => Interlocked.Add(ref inFlightBytes, work.Length),
+                canPost: () => Interlocked.Read(ref inFlightBytes) < MaxInFlightBytes);
+        }
+        catch (JsonException ex)
+        {
+            long fileSize = 0;
+            try { fileSize = new FileInfo(filePath).Length; } catch { /* best effort */ }
+            scannerException = new InvalidDataException(
+                $"JSON 文件不完整或已损坏（常见于导出中断）。文件: {filePath}，大小: {fileSize:N0} 字节。请重新 Export 或改用完整的 XML/二进制备份。",
+                ex);
+            cts.Cancel();
+        }
+        catch (Exception ex)
+        {
+            scannerException = ex;
+            cts.Cancel();
+        }
+        finally
+        {
+            channel.Writer.TryComplete(scannerException);
+        }
+
+        try
+        {
+            await Task.WhenAll(workerTasks);
+        }
+        catch
+        {
+            if (scannerException != null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(scannerException).Throw();
+            throw;
+        }
+
+        if (scannerException != null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(scannerException).Throw();
+
+        var result = new Dictionary<string, List<object>>(bags.Count, StringComparer.Ordinal);
+        foreach (var (key, bag) in bags)
+            result[key] = [.. bag];
+
+        return result;
+    }
+
+    private static async Task ScanAsync(
+        string filePath,
+        IReadOnlyDictionary<string, Type> typeMap,
+        IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules,
+        ChannelWriter<RawEntityWork> writer,
+        CancellationToken ct,
+        Action<RawEntityWork> onPost,
+        Func<bool> canPost)
+    {
+        const int readBufferSize = 4 * 1024 * 1024;
+
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: readBufferSize,
+            useAsync: true);
+
+        var pipeReader = PipeReader.Create(stream, new StreamPipeReaderOptions(bufferSize: readBufferSize));
+        var jsonReaderState = new JsonReaderState();
+
+        bool rootStarted = false;
+        bool rootEnded = false;
+
+        string? currentSetName = null;
+        Type? currentType = null;
+        SchemaMigrationRule? currentRule = null;
+
+        var pending = new List<RawEntityWork>(64);
+
+        try
+        {
+            var nextRead = pipeReader.ReadAsync(ct);
+
+            while (!rootEnded)
             {
+                ct.ThrowIfCancellationRequested();
+
+                ReadResult readResult = await nextRead;
+                ReadOnlySequence<byte> buffer = readResult.Buffer;
+
+                pending.Clear();
+                ScanBuffer(
+                    buffer, readResult.IsCompleted,
+                    ref jsonReaderState,
+                    ref rootStarted, ref rootEnded,
+                    ref currentSetName, ref currentType, ref currentRule,
+                    typeMap, migrationRules, pending,
+                    out long bytesConsumed);
+
+                pipeReader.AdvanceTo(buffer.GetPosition(bytesConsumed), buffer.End);
+
+                if (!readResult.IsCompleted && !rootEnded)
+                    nextRead = pipeReader.ReadAsync(ct);
+
+                foreach (var work in pending)
+                {
+                    while (!canPost())
+                        await Task.Yield();
+
+                    if (!writer.TryWrite(work))
+                        await writer.WriteAsync(work, ct);
+
+                    onPost(work);
+                }
+
+                if (readResult.IsCompleted)
+                {
+                    if (!rootStarted)
+                        throw new InvalidDataException("JSON 文件为空，或未包含有效的根对象。");
+                    if (!rootEnded)
+                        throw new InvalidDataException("JSON 文件结构不完整，未正确结束。");
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            await pipeReader.CompleteAsync();
+        }
+    }
+
+    private static void ScanBuffer(
+        ReadOnlySequence<byte> buffer,
+        bool isFinalBlock,
+        ref JsonReaderState jsonReaderState,
+        ref bool rootStarted,
+        ref bool rootEnded,
+        ref string? currentSetName,
+        ref Type? currentType,
+        ref SchemaMigrationRule? currentRule,
+        IReadOnlyDictionary<string, Type> typeMap,
+        IReadOnlyDictionary<string, SchemaMigrationRule>? migrationRules,
+        List<RawEntityWork> pending,
+        out long bytesConsumed)
+    {
+        var reader = new Utf8JsonReader(buffer, isFinalBlock, jsonReaderState);
+
+        while (true)
+        {
+            var before = reader;
+
+            if (!reader.Read())
+                break;
+
+            if (!rootStarted)
+            {
+                if (reader.TokenType != JsonTokenType.StartObject)
+                    throw new InvalidDataException("JSON 根节点必须是对象。");
+                rootStarted = true;
+                continue;
+            }
+
+            if (currentSetName == null)
+            {
+                if (reader.TokenType == JsonTokenType.EndObject)
+                {
+                    rootEnded = true;
+                    break;
+                }
+
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                    throw new InvalidDataException("JSON 根对象中的成员名称无效。");
+
+                currentSetName = reader.GetString()
+                    ?? throw new InvalidDataException("集合名称不能为空。");
+
+                if (!reader.Read())
+                {
+                    reader = before;
+                    break;
+                }
+
+                if (reader.TokenType != JsonTokenType.StartArray)
+                    throw new InvalidDataException($"集合 '{currentSetName}' 的值不是数组。");
+
+                if (!typeMap.TryGetValue(currentSetName, out currentType))
+                    currentType = null;
+
+                currentRule = null;
+                if (currentType != null && migrationRules != null)
+                    migrationRules.TryGetValue(currentSetName, out currentRule);
+
+                continue;
+            }
+
+            if (reader.TokenType == JsonTokenType.EndArray)
+            {
+                currentSetName = null;
+                currentType = null;
+                currentRule = null;
+                continue;
+            }
+
+            if (currentType == null)
+            {
+                if (!TrySkip(ref reader)) { reader = before; break; }
+                continue;
+            }
+
+            if (reader.TokenType != JsonTokenType.StartObject)
+                throw new InvalidDataException("集合数组中的元素必须是 JSON 对象。");
+
+            long entityStart = (long)reader.TokenStartIndex;
+            if (!TrySkip(ref reader)) { reader = before; break; }
+
+            int entityLength = (int)((long)reader.BytesConsumed - entityStart);
+            var rented = ArrayPool<byte>.Shared.Rent(entityLength);
+            buffer.Slice(entityStart, entityLength).CopyTo(rented);
+            pending.Add(new RawEntityWork(currentSetName!, currentType, currentRule, rented, entityLength));
+        }
+
+        jsonReaderState = reader.CurrentState;
+        bytesConsumed = reader.BytesConsumed;
+    }
+
+    private static bool TrySkip(ref Utf8JsonReader reader) => reader.TrySkip();
+
+    private static async Task RunWorker(
+        ChannelReader<RawEntityWork> channelReader,
+        ConcurrentDictionary<string, ConcurrentBag<object>> bags,
+        JsonSerializerOptions jsonOptions,
+        CancellationToken ct,
+        Action<int> releaseBytes)
+    {
+        await foreach (var work in channelReader.ReadAllAsync(ct))
+        {
+            try
+            {
+                var span = work.Buffer.AsSpan(0, work.Length);
                 object? entity;
 
-                if (hasRenames)
+                if (work.Rule != null && work.Rule.PropertyRenames.Count > 0)
                 {
-                    // 存在重命名规则时，通过 JsonNode 修正属性名后再反序列化
-                    var node = JsonNode.Parse(element.GetRawText())!.AsObject();
-                    var namingPolicy = jsonOptions.PropertyNamingPolicy;
-
-                    foreach (var (oldName, newName) in rule!.PropertyRenames)
-                    {
-                        // 将 CLR 属性名通过命名策略转换为 JSON 属性名
-                        var oldJsonName = namingPolicy?.ConvertName(oldName) ?? oldName;
-                        var newJsonName = namingPolicy?.ConvertName(newName) ?? newName;
-
-                        if (node.ContainsKey(oldJsonName))
-                        {
-                            var val = node[oldJsonName];
-                            node.Remove(oldJsonName);
-                            node[newJsonName] = val?.DeepClone();
-                        }
-                    }
-
-                    entity = node.Deserialize(type, jsonOptions);
+                    using var doc = JsonDocument.Parse(work.Buffer.AsMemory(0, work.Length));
+                    var node = JsonObject.Create(doc.RootElement)
+                               ?? throw new InvalidDataException("JSON 元素不是有效对象。");
+                    ApplyPropertyRenames(node, work.Rule, jsonOptions);
+                    entity = node.Deserialize(work.EntityType, jsonOptions);
                 }
                 else
                 {
-                    entity = element.Deserialize(type, jsonOptions);
+                    entity = JsonSerializer.Deserialize(span, work.EntityType, jsonOptions);
                 }
 
-                if (entity != null) entities.Add(entity);
+                if (entity != null)
+                    bags.GetOrAdd(work.SetName, _ => new ConcurrentBag<object>()).Add(entity);
             }
-            result[prop.Name] = entities;
+            finally
+            {
+                releaseBytes(work.Length);
+                ArrayPool<byte>.Shared.Return(work.Buffer);
+            }
         }
+    }
 
-        return result;
+    private static void ApplyPropertyRenames(
+        JsonObject node,
+        SchemaMigrationRule rule,
+        JsonSerializerOptions options)
+    {
+        var namingPolicy = options.PropertyNamingPolicy;
+
+        foreach (var (oldName, newName) in rule.PropertyRenames)
+        {
+            var oldJsonName = namingPolicy?.ConvertName(oldName) ?? oldName;
+            var newJsonName = namingPolicy?.ConvertName(newName) ?? newName;
+
+            if (!node.ContainsKey(oldJsonName))
+                continue;
+
+            var value = node[oldJsonName];
+            node.Remove(oldJsonName);
+            node[newJsonName] = value?.DeepClone();
+        }
     }
 }

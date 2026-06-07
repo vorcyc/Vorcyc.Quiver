@@ -2,36 +2,20 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Xml.Linq;
-using Vorcyc.Quiver;
+using System.Xml;
 using Vorcyc.Quiver.Migration;
 
 namespace Vorcyc.Quiver.Storage;
 
 /// <summary>
-/// XML 格式的存储提供者，实现 <see cref="IStorageProvider"/> 接口。
+/// 提供基于 XML 的向量集合持久化实现。
 /// <para>
-/// 使用 <see cref="System.Xml.Linq"/> 进行序列化和反序列化，具有以下特点：
-/// <list type="bullet">
-///   <item>可读性好，生成的 XML 文件结构清晰，便于人工审查。</item>
-///   <item>向量数据使用 Base64 编码，紧凑且无精度损失。</item>
-///   <item>日期时间使用 ISO 8601 往返格式（<c>"O"</c>），保证跨时区精度。</item>
-///   <item>数值类型使用 <see cref="CultureInfo.InvariantCulture"/>，保证跨区域一致性。</item>
-/// </list>
+/// 该实现使用 <see cref="XmlWriter"/> 与 <see cref="XmlReader"/> 顺序写入和读取 XML，
+/// 避免 <see cref="System.Xml.Linq.XDocument"/> 在大文件场景下将整棵文档树加载到内存中。
 /// </para>
 /// <para>
-/// XML 文件结构概览：
-/// <code>
-/// &lt;QuiverDb version="1"&gt;
-///   &lt;Set type="FaceFeature" count="N"&gt;
-///     &lt;Entity&gt;
-///       &lt;Id&gt;...&lt;/Id&gt;
-///       &lt;Embedding&gt;Base64...&lt;/Embedding&gt;
-///     &lt;/Entity&gt;
-///     ...
-///   &lt;/Set&gt;
-/// &lt;/QuiverDb&gt;
-/// </code>
+/// 根元素为 <c>&lt;QuiverDb&gt;</c>，每个集合对应一个 <c>&lt;Set&gt;</c> 元素，
+/// 每个实体对应一个 <c>&lt;Entity&gt;</c> 元素，属性使用同名子元素表示。
 /// </para>
 /// </summary>
 /// <seealso cref="IStorageProvider"/>
@@ -39,72 +23,95 @@ namespace Vorcyc.Quiver.Storage;
 internal class XmlExportProvider : IStorageProvider
 {
     /// <summary>
-    /// 将所有向量集合以 XML 格式异步持久化到指定文件。
+    /// 当前 XML 存储格式的架构版本号。
+    /// </summary>
+    private const int CurrentSchemaVersion = 4;
+
+    /// <summary>
+    /// 将所有向量集合以 XML 格式异步写入指定文件。
     /// <para>
-    /// 输出为 UTF-8 编码的 XML 文档，根元素为 <c>&lt;QuiverDb&gt;</c>，
-    /// 每个向量集合对应一个 <c>&lt;Set&gt;</c> 子元素，实体按属性名称排序写入。
+    /// 该方法按集合、实体、属性的顺序逐步写出 XML 内容，不会在内存中构建完整文档树，
+    /// 更适合大文件导出场景。
     /// </para>
     /// </summary>
-    /// <param name="filePath">目标文件的绝对或相对路径。文件不存在时自动创建，已存在时覆盖。</param>
+    /// <param name="filePath">目标文件路径。若文件已存在将被覆盖。</param>
     /// <param name="sets">
-    /// 要保存的向量集合字典。键为类型名称，值为元组 <c>(Type, List&lt;object&gt;)</c>，
-    /// 包含实体的 CLR 类型及实体列表。
+    /// 待保存的集合字典。
+    /// <para>
+    /// 键为集合名称；值为包含实体类型与实体列表的元组。
+    /// </para>
     /// </param>
-    /// <returns>表示异步写入操作的任务。</returns>
+    /// <returns>表示异步保存操作的任务。</returns>
     public async Task SaveAsync(string filePath, IReadOnlyDictionary<string, (Type Type, List<object> Entities)> sets)
     {
-        // 创建根元素，附带版本号属性
-        var root = new XElement("QuiverDb", new XAttribute("version", 1));
-
-        foreach (var (typeName, (type, entities)) in sets)
+        var settings = new XmlWriterSettings
         {
-            // 每个向量集合对应一个 <Set> 元素，记录类型名称和实体数量
-            var setEl = new XElement("Set",
-                new XAttribute("type", typeName),
-                new XAttribute("count", entities.Count));
+            Async = true,
+            Indent = true,
+            Encoding = new UTF8Encoding(false)
+        };
 
-            // 获取按名称排序的属性，保证 XML 中字段顺序一致
-            var props = GetSortedProperties(type);
+        await using var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, true);
+        await using var writer = XmlWriter.Create(stream, settings);
+
+        await writer.WriteStartDocumentAsync();
+        await writer.WriteStartElementAsync(null, "QuiverDb", null);
+        await writer.WriteAttributeStringAsync(null, "version", null, CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture));
+
+        foreach (var (setName, (entityType, entities)) in sets)
+        {
+            await writer.WriteStartElementAsync(null, "Set", null);
+            await writer.WriteAttributeStringAsync(null, "type", null, setName);
+            await writer.WriteAttributeStringAsync(null, "count", null, entities.Count.ToString(CultureInfo.InvariantCulture));
+
+            // 按名称稳定排序，保证同一类型生成的字段顺序一致。
+            var props = GetSortedProperties(entityType);
 
             foreach (var entity in entities)
             {
-                // 每个实体对应一个 <Entity> 元素，逐属性写入子元素
-                var entityEl = new XElement("Entity");
+                await writer.WriteStartElementAsync(null, "Entity", null);
+
                 foreach (var prop in props)
-                    entityEl.Add(PropertyToXml(prop, prop.GetValue(entity)));
-                setEl.Add(entityEl);
+                    await WritePropertyAsync(writer, prop, prop.GetValue(entity));
+
+                await writer.WriteEndElementAsync();
             }
-            root.Add(setEl);
+
+            await writer.WriteEndElementAsync();
         }
 
-        // 构建完整 XML 文档（声明 UTF-8 编码），异步写入文件
-        var doc = new XDocument(new XDeclaration("1.0", "utf-8", null), root);
-        await using var writer = new StreamWriter(filePath, false, Encoding.UTF8);
-        await doc.SaveAsync(writer, SaveOptions.None, CancellationToken.None);
+        await writer.WriteEndElementAsync();
+        await writer.WriteEndDocumentAsync();
+        await writer.FlushAsync();
     }
 
     /// <summary>
     /// 从指定 XML 文件异步加载所有向量集合。
     /// <para>
-    /// 加载流程：
-    /// <list type="number">
-    ///   <item>异步读取并解析 XML 文档。</item>
-    ///   <item>遍历每个 <c>&lt;Set&gt;</c> 元素，通过 <paramref name="typeMap"/> 匹配 CLR 类型。</item>
-    ///   <item>若存在迁移规则，在查找属性元素时同时检查旧属性名（反向重命名映射）。</item>
-    ///   <item>逐实体反序列化属性值；缺失的属性保持默认值，未匹配的类型被跳过（前向兼容）。</item>
-    /// </list>
+    /// 该方法使用 <see cref="XmlReader"/> 顺序读取文档，仅保留当前正在处理的节点内容，
+    /// 因而比基于 DOM 的读取方式更适合大文件输入。
     /// </para>
     /// </summary>
     /// <param name="filePath">要读取的 XML 文件路径。</param>
     /// <param name="typeMap">
-    /// 类型名称到 CLR <see cref="Type"/> 的映射字典。
-    /// <para>文件中存在但字典中缺失的类型将被跳过，确保前向兼容。</para>
+    /// 集合名称到 CLR 类型的映射字典。
+    /// <para>
+    /// 若 XML 中某个集合名称未在此映射表中注册，则该集合会被跳过。
+    /// </para>
     /// </param>
     /// <param name="migrationRules">
-    /// 可选的 Schema 迁移规则字典。键为类型全名，值为迁移规则。
-    /// 包含属性重命名映射，加载时将 XML 中的旧元素名映射到当前属性。
+    /// 可选的架构迁移规则字典。
+    /// <para>
+    /// 键为集合名称，值为对应的迁移规则。若存在属性重命名规则，
+    /// 读取时会将旧元素名映射为当前属性名。
+    /// </para>
     /// </param>
-    /// <returns>加载后的向量集合字典。键为类型名称，值为反序列化后的实体对象列表。</returns>
+    /// <returns>
+    /// 包含所有成功加载集合的字典。
+    /// <para>
+    /// 字典键为集合名称，值为该集合中反序列化后的实体对象列表。
+    /// </para>
+    /// </returns>
     public async Task<Dictionary<string, List<object>>> LoadAsync(
         string filePath,
         IReadOnlyDictionary<string, Type> typeMap,
@@ -112,158 +119,440 @@ internal class XmlExportProvider : IStorageProvider
     {
         var result = new Dictionary<string, List<object>>();
 
-        // 异步读取并解析 XML 文档
-        await using var stream = File.OpenRead(filePath);
-        var doc = await XDocument.LoadAsync(stream, LoadOptions.None, CancellationToken.None);
-
-        // 遍历根元素下的每个 <Set> 子元素
-        foreach (var setEl in doc.Root!.Elements("Set"))
+        var settings = new XmlReaderSettings
         {
-            // 从 type 属性获取类型名称，匹配 CLR 类型
-            var typeName = setEl.Attribute("type")!.Value;
-            if (!typeMap.TryGetValue(typeName, out var type)) continue;
+            Async = true,
+            IgnoreComments = true,
+            IgnoreWhitespace = true
+        };
 
-            // 获取当前类型的迁移规则（如果有）
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, true);
+        using var reader = XmlReader.Create(stream, settings);
+
+        while (await reader.ReadAsync())
+        {
+            if (reader.NodeType != XmlNodeType.Element || reader.Name != "Set")
+                continue;
+
+            var setName = reader.GetAttribute("type");
+            if (string.IsNullOrEmpty(setName))
+                continue;
+
+            if (!typeMap.TryGetValue(setName, out var entityType))
+            {
+                // 对当前版本未知的集合直接跳过，保持前向兼容。
+                await SkipElementAsync(reader);
+                continue;
+            }
+
             SchemaMigrationRule? rule = null;
-            if (migrationRules != null)
-                migrationRules.TryGetValue(typeName, out rule);
+            migrationRules?.TryGetValue(setName, out rule);
 
-            var props = GetSortedProperties(type);
+            var props = GetSortedProperties(entityType);
+            var propMap = props.ToDictionary(p => p.Name);
             var entities = new List<object>();
 
-            // 遍历 <Entity> 元素，反射创建实体并逐属性赋值
-            foreach (var entityEl in setEl.Elements("Entity"))
+            if (reader.IsEmptyElement)
             {
-                var entity = Activator.CreateInstance(type)!;
-                foreach (var prop in props)
+                result[setName] = entities;
+                continue;
+            }
+
+            while (await reader.ReadAsync())
+            {
+                if (reader.NodeType == XmlNodeType.EndElement && reader.Name == "Set")
+                    break;
+
+                if (reader.NodeType != XmlNodeType.Element || reader.Name != "Entity")
+                    continue;
+
+                var entity = Activator.CreateInstance(entityType)!;
+
+                if (!reader.IsEmptyElement)
                 {
-                    var propEl = entityEl.Element(prop.Name);
+                    await reader.ReadAsync();
+                    while (true)
+                    {
+                        if (reader.NodeType == XmlNodeType.EndElement && reader.Name == "Entity")
+                            break;
 
-                    // 当前属性名未找到元素时，尝试通过反向重命名映射查找旧属性名的元素
-                    if (propEl == null && rule?.ReverseRenames.TryGetValue(prop.Name, out var oldName) == true)
-                        propEl = entityEl.Element(oldName);
+                        if (reader.NodeType == XmlNodeType.Element)
+                        {
+                            var elementName = reader.Name;
+                            var targetName = ResolvePropertyName(elementName, rule);
 
-                    // 跳过缺失的属性或标记为 null 的属性
-                    if (propEl == null || propEl.Attribute("null") != null) continue;
-                    prop.SetValue(entity, XmlToValue(propEl, prop.PropertyType));
+                            if (!propMap.TryGetValue(targetName, out var prop))
+                            {
+                                await SkipElementAsync(reader);
+                                continue;
+                            }
+
+                            var isNull = reader.GetAttribute("null") != null;
+                            if (isNull)
+                            {
+                                await SkipElementAsync(reader);
+                                continue;
+                            }
+
+                            var value = await ReadElementValueAsync(reader, prop.PropertyType);
+                            prop.SetValue(entity, value);
+                            continue;
+                        }
+
+                        if (!await reader.ReadAsync())
+                            break;
+                    }
                 }
+
                 entities.Add(entity);
             }
-            result[typeName] = entities;
+
+            result[setName] = entities;
         }
 
         return result;
     }
 
-    #region 序列化辅助
+    /// <summary>
+    /// 根据迁移规则将 XML 元素名解析为目标属性名。
+    /// </summary>
+    /// <param name="xmlName">XML 中读取到的元素名称。</param>
+    /// <param name="rule">当前集合对应的迁移规则。</param>
+    /// <returns>最终应写入对象属性的名称。</returns>
+    private static string ResolvePropertyName(string xmlName, SchemaMigrationRule? rule)
+    {
+        if (rule is null)
+            return xmlName;
+
+        foreach (var (oldName, newName) in rule.PropertyRenames)
+        {
+            if (oldName == xmlName)
+                return newName;
+        }
+
+        return xmlName;
+    }
 
     /// <summary>
-    /// 将单个属性值序列化为 XML 元素。
-    /// <para>
-    /// 不同类型的序列化策略：
-    /// <list type="bullet">
-    ///   <item><see langword="null"/>：添加 <c>null="true"</c> 属性标记。</item>
-    ///   <item><c>float[]</c>：使用 <see cref="MemoryMarshal.AsBytes{T}(Span{T})"/>
-    ///     零拷贝转换后进行 Base64 编码，紧凑且无精度损失。</item>
-    ///   <item><c>string[]</c>：每个元素写入一个 <c>&lt;Item&gt;</c> 子元素。</item>
-    ///   <item><see cref="DateTime"/>：使用 ISO 8601 往返格式（<c>"O"</c>）。</item>
-    ///   <item>其他类型：使用 <see cref="Convert.ToString(object, IFormatProvider)"/>
-    ///     配合 <see cref="CultureInfo.InvariantCulture"/>。</item>
-    /// </list>
-    /// </para>
+    /// 将单个属性值写入为 XML 元素。
     /// </summary>
-    /// <param name="prop">要序列化的属性元数据。</param>
+    /// <param name="writer">目标 XML 写入器。</param>
+    /// <param name="prop">属性元数据。</param>
     /// <param name="value">属性值，可能为 <see langword="null"/>。</param>
-    /// <returns>表示该属性的 <see cref="XElement"/>。</returns>
-    private static XElement PropertyToXml(PropertyInfo prop, object? value)
+    /// <returns>表示异步写入操作的任务。</returns>
+    private static async Task WritePropertyAsync(XmlWriter writer, PropertyInfo prop, object? value)
     {
-        var el = new XElement(prop.Name);
+        await writer.WriteStartElementAsync(null, prop.Name, null);
 
-        // null 值：添加标记属性后直接返回空元素
-        if (value == null) { el.Add(new XAttribute("null", true)); return el; }
+        if (value == null)
+        {
+            await writer.WriteAttributeStringAsync(null, "null", null, "true");
+            await writer.WriteEndElementAsync();
+            return;
+        }
 
         var type = prop.PropertyType;
 
         if (type == typeof(float[]))
-        {
-            // 向量用 Base64 编码：先零拷贝转为字节，再编码为字符串，紧凑且无精度损失
-            var arr = (float[])value;
-            el.Value = Convert.ToBase64String(MemoryMarshal.AsBytes(arr.AsSpan()));
-        }
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((float[])value).AsSpan())));
+        else if (type == typeof(double[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((double[])value).AsSpan())));
+        else if (type == typeof(Half[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((Half[])value).AsSpan())));
+        else if (type == typeof(short[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((short[])value).AsSpan())));
+        else if (type == typeof(int[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((int[])value).AsSpan())));
+        else if (type == typeof(long[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((long[])value).AsSpan())));
+        else if (type == typeof(ushort[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((ushort[])value).AsSpan())));
+        else if (type == typeof(uint[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((uint[])value).AsSpan())));
+        else if (type == typeof(ulong[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((ulong[])value).AsSpan())));
+        else if (type == typeof(sbyte[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((sbyte[])value).AsSpan())));
+        else if (type == typeof(bool[]))
+            await writer.WriteStringAsync(Convert.ToBase64String(MemoryMarshal.AsBytes(((bool[])value).AsSpan())));
+        else if (type == typeof(byte[]))
+            await writer.WriteStringAsync(Convert.ToBase64String((byte[])value));
         else if (type == typeof(string[]))
         {
-            // 字符串数组：每个元素对应一个 <Item> 子元素
             foreach (var s in (string[])value)
-                el.Add(new XElement("Item", s));
+            {
+                await writer.WriteStartElementAsync(null, "Item", null);
+                await writer.WriteStringAsync(SanitizeXmlString(s));
+                await writer.WriteEndElementAsync();
+            }
+        }
+        else if (type == typeof(DateOnly[]))
+        {
+            foreach (var d in (DateOnly[])value)
+            {
+                await writer.WriteStartElementAsync(null, "Item", null);
+                await writer.WriteStringAsync(d.ToString("O", CultureInfo.InvariantCulture));
+                await writer.WriteEndElementAsync();
+            }
+        }
+        else if (type == typeof(TimeOnly[]))
+        {
+            foreach (var t in (TimeOnly[])value)
+            {
+                await writer.WriteStartElementAsync(null, "Item", null);
+                await writer.WriteStringAsync(t.ToString("O", CultureInfo.InvariantCulture));
+                await writer.WriteEndElementAsync();
+            }
         }
         else if (type == typeof(DateTime))
-            // 日期时间使用 ISO 8601 往返格式，保证跨时区精度
-            el.Value = ((DateTime)value).ToString("O");
+            await writer.WriteStringAsync(((DateTime)value).ToString("O", CultureInfo.InvariantCulture));
+        else if (type == typeof(DateTimeOffset))
+            await writer.WriteStringAsync(((DateTimeOffset)value).ToString("O", CultureInfo.InvariantCulture));
+        else if (type == typeof(DateOnly))
+            await writer.WriteStringAsync(((DateOnly)value).ToString("O", CultureInfo.InvariantCulture));
+        else if (type == typeof(TimeOnly))
+            await writer.WriteStringAsync(((TimeOnly)value).ToString("O", CultureInfo.InvariantCulture));
+        else if (type == typeof(TimeSpan))
+            await writer.WriteStringAsync(((TimeSpan)value).ToString("c", CultureInfo.InvariantCulture));
+        else if (type == typeof(Half))
+            await writer.WriteStringAsync(((Half)value).ToString("R", CultureInfo.InvariantCulture));
+        else if (type == typeof(char))
+            await writer.WriteStringAsync(((ushort)(char)value).ToString(CultureInfo.InvariantCulture));
+        else if (type == typeof(string))
+            await writer.WriteStringAsync(SanitizeXmlString((string)value));
         else
-            // 其他类型：使用不变区域性格式化，保证跨区域一致性
-            el.Value = Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+            await writer.WriteStringAsync(Convert.ToString(value, CultureInfo.InvariantCulture) ?? "");
 
-        return el;
+        await writer.WriteEndElementAsync();
     }
 
     /// <summary>
-    /// 将 XML 元素反序列化为对应的 CLR 属性值。
-    /// <para>
-    /// 不同类型的反序列化策略：
-    /// <list type="bullet">
-    ///   <item><c>float[]</c>：从 Base64 解码后通过 <see cref="Buffer.BlockCopy"/> 还原浮点数组。</item>
-    ///   <item><c>string[]</c>：收集所有 <c>&lt;Item&gt;</c> 子元素的文本值。</item>
-    ///   <item><see cref="DateTime"/>：使用 <see cref="DateTimeStyles.RoundtripKind"/> 保留时区信息。</item>
-    ///   <item>数值类型：使用 <see cref="CultureInfo.InvariantCulture"/> 解析。</item>
-    ///   <item>兜底：通过 <see cref="Convert.ChangeType(object, Type, IFormatProvider)"/> 进行通用转换。</item>
-    /// </list>
-    /// </para>
+    /// 读取当前属性元素的内容，并转换为目标 CLR 类型。
     /// </summary>
-    /// <param name="el">包含属性值的 XML 元素。</param>
-    /// <param name="type">目标属性的 CLR 类型。</param>
-    /// <returns>反序列化后的属性值。</returns>
-    private static object? XmlToValue(XElement el, Type type)
+    /// <param name="reader">当前定位在属性元素上的 XML 读取器。</param>
+    /// <param name="type">目标属性类型。</param>
+    /// <returns>转换后的属性值。</returns>
+    private static async Task<object?> ReadElementValueAsync(XmlReader reader, Type type)
     {
+        if (type == typeof(string))
+            return await reader.ReadElementContentAsStringAsync();
+
+        if (type == typeof(string[]))
+            return await ReadItemArrayAsync(reader, s => s);
+
+        if (type == typeof(DateOnly[]))
+            return await ReadItemArrayAsync(reader, s => DateOnly.Parse(s, CultureInfo.InvariantCulture));
+
+        if (type == typeof(TimeOnly[]))
+            return await ReadItemArrayAsync(reader, s => TimeOnly.Parse(s, CultureInfo.InvariantCulture));
+
+        var text = await reader.ReadElementContentAsStringAsync();
+
+        if (type == typeof(int)) return int.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(long)) return long.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(float)) return float.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(double)) return double.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(bool)) return bool.Parse(text);
+        if (type == typeof(Guid)) return Guid.Parse(text);
+        if (type == typeof(decimal)) return decimal.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(short)) return short.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(byte)) return byte.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(Half)) return Half.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(DateTime)) return DateTime.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        if (type == typeof(DateTimeOffset)) return DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        if (type == typeof(DateOnly)) return DateOnly.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(TimeOnly)) return TimeOnly.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(TimeSpan)) return TimeSpan.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(ushort)) return ushort.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(uint)) return uint.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(ulong)) return ulong.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(sbyte)) return sbyte.Parse(text, CultureInfo.InvariantCulture);
+        if (type == typeof(char)) return (char)ushort.Parse(text, CultureInfo.InvariantCulture);
+
         if (type == typeof(float[]))
         {
-            // Base64 解码 → 字节块拷贝还原浮点数组
-            var bytes = Convert.FromBase64String(el.Value);
-            var floats = new float[bytes.Length / sizeof(float)];
-            Buffer.BlockCopy(bytes, 0, floats, 0, bytes.Length);
-            return floats;
+            var b = Convert.FromBase64String(text);
+            var a = new float[b.Length / sizeof(float)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
         }
-        // 字符串数组：收集所有 <Item> 子元素
-        if (type == typeof(string[])) return el.Elements("Item").Select(e => e.Value).ToArray();
-        if (type == typeof(string)) return el.Value;
-        // 以下数值类型均使用不变区域性解析，与写入时保持一致
-        if (type == typeof(int)) return int.Parse(el.Value, CultureInfo.InvariantCulture);
-        if (type == typeof(long)) return long.Parse(el.Value, CultureInfo.InvariantCulture);
-        if (type == typeof(float)) return float.Parse(el.Value, CultureInfo.InvariantCulture);
-        if (type == typeof(double)) return double.Parse(el.Value, CultureInfo.InvariantCulture);
-        if (type == typeof(bool)) return bool.Parse(el.Value);
-        // DateTime 使用 RoundtripKind 保留原始时区信息
-        if (type == typeof(DateTime)) return DateTime.Parse(el.Value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
-        if (type == typeof(Guid)) return Guid.Parse(el.Value);
-        if (type == typeof(decimal)) return decimal.Parse(el.Value, CultureInfo.InvariantCulture);
 
-        // 兜底：使用通用类型转换
-        return Convert.ChangeType(el.Value, type, CultureInfo.InvariantCulture);
+        if (type == typeof(double[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new double[b.Length / sizeof(double)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(Half[]))
+        {
+            var b = Convert.FromBase64String(text);
+            return MemoryMarshal.Cast<byte, Half>(new ReadOnlySpan<byte>(b)).ToArray();
+        }
+
+        if (type == typeof(short[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new short[b.Length / sizeof(short)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(int[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new int[b.Length / sizeof(int)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(long[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new long[b.Length / sizeof(long)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(ushort[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new ushort[b.Length / sizeof(ushort)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(uint[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new uint[b.Length / sizeof(uint)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(ulong[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new ulong[b.Length / sizeof(ulong)];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(sbyte[]))
+        {
+            var b = Convert.FromBase64String(text);
+            return MemoryMarshal.Cast<byte, sbyte>(new ReadOnlySpan<byte>(b)).ToArray();
+        }
+
+        if (type == typeof(bool[]))
+        {
+            var b = Convert.FromBase64String(text);
+            var a = new bool[b.Length];
+            Buffer.BlockCopy(b, 0, a, 0, b.Length);
+            return a;
+        }
+
+        if (type == typeof(byte[]))
+            return Convert.FromBase64String(text);
+
+        return Convert.ChangeType(text, type, CultureInfo.InvariantCulture);
     }
 
-    #endregion
+    /// <summary>
+    /// 读取由多个 <c>&lt;Item&gt;</c> 子元素组成的数组值。
+    /// </summary>
+    /// <typeparam name="T">数组元素类型。</typeparam>
+    /// <param name="reader">当前定位在数组属性元素上的 XML 读取器。</param>
+    /// <param name="converter">将文本转换为目标类型的委托。</param>
+    /// <returns>解析得到的数组。</returns>
+    private static async Task<T[]> ReadItemArrayAsync<T>(XmlReader reader, Func<string, T> converter)
+    {
+        if (reader.IsEmptyElement)
+        {
+            await reader.ReadAsync();
+            return [];
+        }
+
+        var items = new List<T>();
+        var containerName = reader.Name;
+
+        while (await reader.ReadAsync())
+        {
+            if (reader.NodeType == XmlNodeType.EndElement && reader.Name == containerName)
+                break;
+
+            if (reader.NodeType != XmlNodeType.Element || reader.Name != "Item")
+                continue;
+
+            var value = await reader.ReadElementContentAsStringAsync();
+            items.Add(converter(value));
+        }
+
+        return items.ToArray();
+    }
 
     /// <summary>
-    /// 获取指定类型的所有公共可读写实例属性，并按名称升序排列。
-    /// <para>
-    /// 按名称排序确保属性在 XML 中的读写顺序始终一致，
-    /// 不受编译器或反射返回顺序变化的影响。
-    /// </para>
+    /// 跳过当前元素及其全部子节点。
     /// </summary>
-    /// <param name="type">要获取属性的 CLR 类型。</param>
-    /// <returns>按名称排序后的 <see cref="PropertyInfo"/> 数组。</returns>
+    /// <param name="reader">当前定位在元素起始节点上的 XML 读取器。</param>
+    /// <returns>表示异步跳过操作的任务。</returns>
+    private static async Task SkipElementAsync(XmlReader reader)
+    {
+        if (reader.IsEmptyElement)
+        {
+            await reader.ReadAsync();
+            return;
+        }
+
+        var depth = reader.Depth;
+        while (await reader.ReadAsync())
+        {
+            if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 获取指定类型的所有公共实例可读写属性，并按名称升序排列。
+    /// </summary>
+    /// <param name="type">目标 CLR 类型。</param>
+    /// <returns>按属性名称排序后的属性数组。</returns>
     private static PropertyInfo[] GetSortedProperties(Type type)
         => type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                .Where(p => p.CanRead && p.CanWrite)
                .OrderBy(p => p.Name)
                .ToArray();
+
+    /// <summary>
+    /// 移除 XML 1.0 不允许出现在文本节点中的字符。
+    /// </summary>
+    /// <param name="value">待清理的字符串。</param>
+    /// <returns>移除非法字符后的字符串。</returns>
+    private static string SanitizeXmlString(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return value;
+
+        StringBuilder? sb = null;
+
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            bool valid = c == '\t' || c == '\n' || c == '\r'
+                         || (c >= 0x20 && c <= 0xD7FF)
+                         || (c >= 0xE000 && c <= 0xFFFD);
+
+            if (!valid)
+            {
+                sb ??= new StringBuilder(value, 0, i, value.Length);
+            }
+            else
+            {
+                sb?.Append(c);
+            }
+        }
+
+        return sb?.ToString() ?? value;
+    }
 }

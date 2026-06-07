@@ -52,7 +52,8 @@ public partial class QuiverSet<TEntity>
                 batch[idx] = (key, PrepareVectors(entityList[idx]));
             }
 
-            // ── Phase 2: commit all (no further exceptions after this point) ──
+            // ── Phase 2: write entities + vectors; defer index topology until BuildBulk ──
+            var pendingIndexIds = new Dictionary<string, List<int>>(_vectorFields.Count);
             for (var idx = 0; idx < entityList.Count; idx++)
             {
                 var id = _nextId++;
@@ -62,9 +63,16 @@ public partial class QuiverSet<TEntity>
                 foreach (var (name, vector) in batch[idx].Vectors)
                 {
                     StoreVector(name, id, vector);
-                    _indices[name].Add(id);
+                    if (!pendingIndexIds.TryGetValue(name, out var list))
+                    {
+                        list = new List<int>();
+                        pendingIndexIds[name] = list;
+                    }
+                    list.Add(id);
                 }
             }
+
+            FlushPendingIndexBuilds(pendingIndexIds);
             NotifyHeapBytes();
         }
         finally { _lock.ExitWriteLock(); }
@@ -102,6 +110,59 @@ public partial class QuiverSet<TEntity>
 
             RemoveCore(key);
             AddCore(entity);
+        }
+        finally { _lock.ExitWriteLock(); }
+    }
+
+    /// <summary>
+    /// Inserts or updates a batch of entities within a single write lock.
+    /// Later items in the batch win when duplicate keys are present.
+    /// </summary>
+    /// <param name="entities">The entities to insert or update.</param>
+    /// <exception cref="InvalidOperationException">A key is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException">A vector field dimension does not match for one of the entities.</exception>
+    public void UpsertRange(IEnumerable<TEntity> entities)
+    {
+        ThrowIfDisposed();
+        _lock.EnterWriteLock();
+        try
+        {
+            var entityList = entities as IList<TEntity> ?? [.. entities];
+            if (entityList.Count == 0)
+                return;
+
+            var batch = new (object Key, List<(string Name, Array Vector)> Vectors)[entityList.Count];
+
+            for (var idx = 0; idx < entityList.Count; idx++)
+            {
+                var key = _getKey(entityList[idx])
+                    ?? throw new InvalidOperationException("Key property value cannot be null.");
+                batch[idx] = (key, PrepareVectors(entityList[idx]));
+            }
+
+            var pendingIndexIds = new Dictionary<string, List<int>>(_vectorFields.Count);
+            for (var idx = 0; idx < entityList.Count; idx++)
+            {
+                RemoveCore(batch[idx].Key);
+
+                var id = _nextId++;
+                _entities.Set(id, entityList[idx]);
+                _keyToId[batch[idx].Key] = id;
+
+                foreach (var (name, indexVector) in batch[idx].Vectors)
+                {
+                    StoreVector(name, id, indexVector);
+                    if (!pendingIndexIds.TryGetValue(name, out var list))
+                    {
+                        list = new List<int>();
+                        pendingIndexIds[name] = list;
+                    }
+                    list.Add(id);
+                }
+            }
+
+            FlushPendingIndexBuilds(pendingIndexIds);
+            NotifyHeapBytes();
         }
         finally { _lock.ExitWriteLock(); }
     }

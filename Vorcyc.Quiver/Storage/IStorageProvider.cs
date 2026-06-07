@@ -67,15 +67,51 @@ internal static class ExportStorageProviderFactory
     public static IStorageProvider Create(ExportFormat format, System.Text.Json.JsonSerializerOptions? jsonOptions = null) =>
         format switch
         {
-            ExportFormat.Json => new JsonExportProvider(jsonOptions ?? DefaultJsonOptions),
+            ExportFormat.Json => new JsonExportProvider(EnsureVectorConverters(jsonOptions)),
             ExportFormat.Xml  => new XmlExportProvider(),
             _ => throw new ArgumentOutOfRangeException(nameof(format))
         };
 
-    /// <summary>默认 JSON 导出选项：缩进 + 驼峰命名。</summary>
-    internal static readonly System.Text.Json.JsonSerializerOptions DefaultJsonOptions = new()
+    /// <summary>默认 JSON 导出选项：紧凑布局 + 驼峰命名 + 向量 Base64 编码。</summary>
+    internal static readonly System.Text.Json.JsonSerializerOptions DefaultJsonOptions = CreateDefaultJsonOptions();
+
+    /// <summary>
+    /// Returns <paramref name="options"/> when vector converters are already present;
+    /// otherwise clones and attaches <see cref="FloatArrayJsonConverter"/> / <see cref="HalfArrayJsonConverter"/>.
+    /// </summary>
+    internal static System.Text.Json.JsonSerializerOptions EnsureVectorConverters(
+        System.Text.Json.JsonSerializerOptions? options)
     {
-        WriteIndented = true,
-        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
-    };
+        options ??= DefaultJsonOptions;
+        if (HasVectorConverters(options))
+            return options;
+
+        var clone = new System.Text.Json.JsonSerializerOptions(options);
+        clone.Converters.Add(new FloatArrayJsonConverter());
+        clone.Converters.Add(new HalfArrayJsonConverter());
+        return clone;
+    }
+
+    private static System.Text.Json.JsonSerializerOptions CreateDefaultJsonOptions()
+    {
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            WriteIndented = false,
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+        options.Converters.Add(new FloatArrayJsonConverter());
+        options.Converters.Add(new HalfArrayJsonConverter());
+        return options;
+    }
+
+    private static bool HasVectorConverters(System.Text.Json.JsonSerializerOptions options)
+    {
+        foreach (var converter in options.Converters)
+        {
+            if (converter is FloatArrayJsonConverter or HalfArrayJsonConverter)
+                return true;
+        }
+
+        return false;
+    }
 }

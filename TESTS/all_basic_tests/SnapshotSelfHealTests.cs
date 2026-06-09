@@ -147,4 +147,64 @@ public static class SnapshotSelfHealTests
             try { if (File.Exists(path)) File.Delete(path); } catch { /* ignore */ }
         }
     }
+
+    /// <summary>
+    /// 删除后整库保存必须把 HNSW 节点 id 改写成新行号。
+    /// 否则重开时旧 id 会套到压实后的行上，搜索命中别的实体。
+    /// </summary>
+    public static async Task RunCompactionAsync()
+    {
+        Console.WriteLine("\n═══ 18b. HNSW 删除后保存：行号与图 id 对齐 ═══");
+
+        var rng = new Random(20241120);
+        var path = Path.Combine(Path.GetTempPath(), $"quiver_compact_{Guid.NewGuid():N}.qdb");
+        const int Dim = 32;
+        const int N = 80;
+
+        try
+        {
+            var kept = new List<(string Id, float[] Vector)>();
+            using (var db = new HealFaceDb(path))
+            {
+                await db.LoadAsync();
+                for (int i = 0; i < N; i++)
+                {
+                    var vector = RandomVector(rng, Dim);
+                    var id = $"H{i:D4}";
+                    db.Faces.Add(new HealFace { Id = id, Embedding = vector });
+                    if (i >= 30) kept.Add((id, vector));
+                }
+                await db.SaveAsync();
+            }
+
+            using (var db = new HealFaceDb(path))
+            {
+                await db.LoadAsync();
+                for (int i = 0; i < 30; i++)
+                    db.Faces.RemoveByKey($"H{i:D4}");
+                await db.SaveAsync();
+            }
+
+            using (var db = new HealFaceDb(path))
+            {
+                await db.LoadAsync();
+                Assert(db.Faces.Count == kept.Count, $"压实后 Count == {kept.Count}");
+                Assert(db.Faces.Find("H0000") is null, "已删实体 H0000 不在");
+                Assert(db.Faces.Find("H0050") is not null, "保留实体 H0050 还在");
+
+                int selfHits = 0;
+                foreach (var (id, vector) in kept)
+                {
+                    var hits = db.Faces.Search(e => e.Embedding!, vector, topK: 1);
+                    if (hits.Count == 1 && hits[0].Entity.Id == id)
+                        selfHits++;
+                }
+                Assert(selfHits == kept.Count, $"每条保留向量的最近邻仍是自己（{selfHits}/{kept.Count}）");
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { /* ignore */ }
+        }
+    }
 }

@@ -83,6 +83,12 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     /// <summary>Current maximum layer in the graph. -1 when the graph is empty.</summary>
     private int _maxLevel = -1;
 
+    /// <summary>最近一次成功装入的快照版本。0 表示当前图不是从快照装入的。</summary>
+    private int _snapshotVersion;
+
+    /// <summary>最近一次成功装入的快照所声明的行号上界（不含）。</summary>
+    private int _snapshotCoveredNext;
+
     /// <summary>Level RNG used by <see cref="RandomLevel"/> to generate a new node's level.</summary>
     private readonly Random _rng = new();
 
@@ -359,11 +365,17 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
 
                     foreach (var neighborId in neighborIds)
                     {
+                        if (!_nodes.TryGetValue(neighborId, out var neighborNode))
+                        {
+                            // 悬空 id：只记正向边，搜索时按节点缺失跳过。
+                            node.Neighbors[l].Add(neighborId);
+                            continue;
+                        }
+                        // 旧边指向的 id 被更矮的新节点复用时，这一层并不存在。两边都不连，避免越界。
+                        if ((uint)l >= (uint)neighborNode.Neighbors.Length) continue;
+
                         // 双向连接：新节点 → 邻居（新节点本层至多 mMax 个，永不超限，无需修剪）
                         node.Neighbors[l].Add(neighborId);
-
-                        if (!_nodes.TryGetValue(neighborId, out var neighborNode)) continue;
-
                         // 双向连接：邻居 → 新节点（仅 List.Add，廉价）
                         neighborNode.Neighbors[l].Add(id);
 
@@ -504,6 +516,8 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
         _nodes.Clear();
         _entryPointId = -1;
         _maxLevel = -1;
+        _snapshotVersion = 0;
+        _snapshotCoveredNext = 0;
     }
 
     #endregion
@@ -673,7 +687,7 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
 
     // 快照二进制格式（小端）：
     //   magic        : 4B "QHNS"
-    //   version      : u16 = 1
+    //   version      : u16 = 2（1 为旧格式：id 是保存当时的内存 id，整库压实后会和行号错位）
     //   simName      : string (BinaryWriter.Write)   — TSim 的类型名，用于指纹校验
     //   m            : i32
     //   mMax0        : i32
@@ -683,20 +697,72 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
     //   entryPointId : i32
     //   maxLevel     : i32
     //   nodeCount    : i32
-    //   coveredNext  : i32                            — 快照覆盖的 id 上界（不含）
+    //   coveredNext  : i32                            — 本快照对齐的行号上界（不含）
     //   nodes        : repeat nodeCount
-    //       id           : i32
+    //       id           : i32                        — v2 起为保存文件中的行号
     //       nodeMaxLevel : i32
     //       layers       : repeat (nodeMaxLevel+1)
     //           neighborCount : i32
     //           neighborIds   : i32[neighborCount]
     private const uint SnapshotMagic = 0x534E_4851u; // 'Q','H','N','S' little-endian
-    private const ushort SnapshotVersion = 1;
+    private const ushort SnapshotVersion = 2;
+    private const ushort SnapshotVersionV1 = 1;
 
     /// <inheritdoc />
     public bool TrySaveSnapshot(System.IO.BinaryWriter writer)
+        => TrySaveSnapshot(writer, rowOfInternalId: null);
+
+    /// <inheritdoc />
+    public bool TrySaveSnapshot(System.IO.BinaryWriter writer, IReadOnlyDictionary<int, int>? rowOfInternalId)
     {
         ArgumentNullException.ThrowIfNull(writer);
+
+        // 整库保存会把存活实体压成 0..count-1。图里的 id 必须同步成这个行号，
+        // 否则下次打开会把旧 id 套到新行上。映射里没有的节点/邻居是已删除实体，直接丢掉。
+        var saved = new List<(int NewId, HnswNode Node)>(_nodes.Count);
+        int maxLevel = -1;
+        foreach (var kv in _nodes)
+        {
+            if (!TryMapSnapshotId(rowOfInternalId, kv.Key, out var newId)) continue;
+            saved.Add((newId, kv.Value));
+            if (kv.Value.MaxLevel > maxLevel) maxLevel = kv.Value.MaxLevel;
+        }
+
+        int entry = -1;
+        if (maxLevel >= 0 && TryMapSnapshotId(rowOfInternalId, _entryPointId, out var mappedEntry))
+        {
+            foreach (var item in saved)
+            {
+                if (item.NewId == mappedEntry && item.Node.MaxLevel == maxLevel)
+                {
+                    entry = mappedEntry;
+                    break;
+                }
+            }
+        }
+        if (entry < 0)
+        {
+            foreach (var item in saved)
+            {
+                if (item.Node.MaxLevel == maxLevel)
+                {
+                    entry = item.NewId;
+                    break;
+                }
+            }
+        }
+
+        int coveredNext = 0;
+        if (saved.Count > 0)
+        {
+            if (rowOfInternalId is not null)
+                coveredNext = rowOfInternalId.Count;
+            else
+            {
+                foreach (var item in saved)
+                    if (item.NewId >= coveredNext) coveredNext = item.NewId + 1;
+            }
+        }
 
         writer.Write(SnapshotMagic);
         writer.Write(SnapshotVersion);
@@ -706,32 +772,57 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
         writer.Write(_efConstruction);
         writer.Write(_efSearch);
         writer.Write(_vectorStore.EffectiveDim);
-        writer.Write(_entryPointId);
-        writer.Write(_maxLevel);
-        writer.Write(_nodes.Count);
-
-        int coveredNext = 0;
-        foreach (var id in _nodes.Keys)
-        {
-            if (id >= coveredNext) coveredNext = id + 1;
-        }
+        writer.Write(entry);
+        writer.Write(maxLevel);
+        writer.Write(saved.Count);
         writer.Write(coveredNext);
 
-        foreach (var kv in _nodes)
+        foreach (var item in saved)
         {
-            var node = kv.Value;
-            writer.Write(node.Id);
+            var node = item.Node;
+            writer.Write(item.NewId);
             writer.Write(node.MaxLevel);
             for (int layer = 0; layer <= node.MaxLevel; layer++)
             {
                 var nbrs = node.Neighbors[layer];
-                writer.Write(nbrs.Count);
+                int kept = 0;
                 for (int i = 0; i < nbrs.Count; i++)
-                    writer.Write(nbrs[i]);
+                    if (TryMapSnapshotId(rowOfInternalId, nbrs[i], out _)) kept++;
+                writer.Write(kept);
+                for (int i = 0; i < nbrs.Count; i++)
+                    if (TryMapSnapshotId(rowOfInternalId, nbrs[i], out var mapped))
+                        writer.Write(mapped);
             }
         }
 
         return true;
+    }
+
+    /// <summary>快照 id 映射。没有映射表时原样保留（调用方保证 id 已经是行号）。</summary>
+    private static bool TryMapSnapshotId(IReadOnlyDictionary<int, int>? rowOfInternalId, int id, out int mapped)
+    {
+        if (rowOfInternalId is null)
+        {
+            mapped = id;
+            return true;
+        }
+        return rowOfInternalId.TryGetValue(id, out mapped);
+    }
+
+    /// <inheritdoc />
+    public bool SnapshotAlignsWith(int slotCount)
+    {
+        if (slotCount < 0 || _snapshotCoveredNext <= 0) return false;
+        foreach (var id in _nodes.Keys)
+        {
+            if ((uint)id >= (uint)_snapshotCoveredNext) return false;
+        }
+
+        // v2 允许后面又追加了行：快照只覆盖前缀。v1 没有“id 已是行号”的保证，
+        // 只有上界正好等于当前行槽数时才可能是同一次保存留下来的对齐快照。
+        if (_snapshotVersion >= SnapshotVersion)
+            return _snapshotCoveredNext <= slotCount;
+        return _snapshotCoveredNext == slotCount;
     }
 
     /// <inheritdoc />
@@ -745,7 +836,7 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
             var magic = reader.ReadUInt32();
             if (magic != SnapshotMagic) return false;
             var version = reader.ReadUInt16();
-            if (version != SnapshotVersion) return false;
+            if (version != SnapshotVersion && version != SnapshotVersionV1) return false;
 
             var simName = reader.ReadString();
             var expectedSim = typeof(TSim).FullName ?? typeof(TSim).Name;
@@ -796,6 +887,8 @@ internal sealed class HnswIndex<TSim> : IVectorIndex
             foreach (var kv in tmpNodes) _nodes[kv.Key] = kv.Value;
             _entryPointId = entryPoint;
             _maxLevel = maxLevel;
+            _snapshotVersion = version;
+            _snapshotCoveredNext = coveredNext;
             snapshotCoveredNextId = coveredNext;
             return true;
         }

@@ -18,6 +18,7 @@ await V4FileFormatTests.RunAsync();
 await MmapVectorStoreTests.RunAsync();
 await TombstoneTests.RunAsync();
 await SnapshotSelfHealTests.RunAsync();
+await SnapshotSelfHealTests.RunCompactionAsync();
 await HalfVectorTests.RunAsync();
 
 TestHelper.PrintSummary();

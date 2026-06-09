@@ -639,9 +639,11 @@ public abstract partial class QuiverDbContext : IDisposable, IAsyncDisposable, I
                 {
                     if (!_typeMap.TryGetValue(tn, out var type)) continue;
                     if (!_sets.TryGetValue(type, out var set)) continue;
-                    var applyM = set.GetType().GetMethod("ApplyIndexSnapshots", BindingFlags.Instance | BindingFlags.NonPublic);
+                    var applyM = set.GetType().GetMethod("ApplyIndexSnapshots", BindingFlags.Instance | BindingFlags.NonPublic,
+                        types: [typeof(IReadOnlyDictionary<string, byte[]>), typeof(int)]);
                     if (applyM is null) continue;
-                    var covered = (IReadOnlyDictionary<string, int>?)applyM.Invoke(set, [bag]);
+                    var slots = loadedSets.TryGetValue(tn, out var rows) ? rows.Count : 0;
+                    var covered = (IReadOnlyDictionary<string, int>?)applyM.Invoke(set, [bag, slots]);
                     if (covered is { Count: > 0 }) snapshotCoveredByType[tn] = covered;
                 }
             }

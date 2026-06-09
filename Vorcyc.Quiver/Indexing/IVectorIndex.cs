@@ -98,6 +98,20 @@ internal interface IVectorIndex
     bool TrySaveSnapshot(System.IO.BinaryWriter writer) => false;
 
     /// <summary>
+    /// 把拓扑按“保存后的行号”写出。<paramref name="rowOfInternalId"/> 的键是当前内存里的内部 id，
+    /// 值是该实体在本次整库快照中的行号。未出现在映射里的节点和边视为已删除，不写入。
+    /// 默认退回 <see cref="TrySaveSnapshot(System.IO.BinaryWriter)"/>。
+    /// </summary>
+    bool TrySaveSnapshot(System.IO.BinaryWriter writer, IReadOnlyDictionary<int, int>? rowOfInternalId)
+        => TrySaveSnapshot(writer);
+
+    /// <summary>
+    /// 已装入的快照是否能对上这次加载的行槽。对不上时调用方应 <see cref="Clear"/> 并整图重建。
+    /// 默认接受（没有快照语义的索引）。
+    /// </summary>
+    bool SnapshotAlignsWith(int slotCount) => true;
+
+    /// <summary>
     /// 可选：从 <paramref name="reader"/> 反序列化索引拓扑。返回 <see langword="true"/> 表示成功恢复，
     /// 调用方可跳过对快照覆盖区间内 id 的 <see cref="Add"/>；返回 <see langword="false"/> 表示快照无效
     /// 或不兼容（指纹不匹配 / 版本不支持 / 数据损坏），调用方应走在线重建路径。

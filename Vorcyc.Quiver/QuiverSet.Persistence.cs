@@ -322,13 +322,19 @@ public partial class QuiverSet<TEntity>
         _lock.EnterReadLock();
         try
         {
+            // 整库写入顺序就是 _entities 的枚举顺序。快照里的节点 id 必须改成这个行号。
+            var rowOfId = new Dictionary<int, int>(_entities.Count);
+            var row = 0;
+            foreach (var id in _entities.Ids)
+                rowOfId[id] = row++;
+
             var list = new List<(string, int, Func<System.IO.BinaryWriter, bool>)>(_indices.Count);
             foreach (var (name, index) in _indices)
             {
                 // 默认接口实现返回 false；仅 HNSW 等支持快照的索引会真正写出 payload。
-                // 这里直接捕获 index 引用，writer 内部再调用一次 TrySaveSnapshot 即可。
                 var captured = index;
-                list.Add((name, captured.Count, bw => captured.TrySaveSnapshot(bw)));
+                var capturedMap = rowOfId;
+                list.Add((name, captured.Count, bw => captured.TrySaveSnapshot(bw, capturedMap)));
             }
             return list;
         }
@@ -342,7 +348,7 @@ public partial class QuiverSet<TEntity>
     /// 字段不存在 / 快照不兼容 / 解码失败时该字段不会出现在返回字典中。
     /// </summary>
     internal IReadOnlyDictionary<string, int> ApplyIndexSnapshots(
-        IReadOnlyDictionary<string, byte[]> snapshots)
+        IReadOnlyDictionary<string, byte[]> snapshots, int slotCount)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(snapshots);
@@ -358,8 +364,14 @@ public partial class QuiverSet<TEntity>
                 if (bytes is null || bytes.Length == 0) continue;
                 using var ms = new System.IO.MemoryStream(bytes, writable: false);
                 using var br = new System.IO.BinaryReader(ms, System.Text.Encoding.UTF8, leaveOpen: true);
-                if (index.TryLoadSnapshot(br, out var coveredNext) && coveredNext > 0)
-                    result[field] = coveredNext;
+                if (!index.TryLoadSnapshot(br, out var coveredNext) || coveredNext <= 0
+                    || !index.SnapshotAlignsWith(slotCount))
+                {
+                    // 旧快照的 id 是压实前的内存 id。套到新行号上会删错节点，并在下次打开时越界。
+                    index.Clear();
+                    continue;
+                }
+                result[field] = coveredNext;
             }
         }
         finally { _lock.ExitWriteLock(); }
